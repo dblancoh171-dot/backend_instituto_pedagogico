@@ -4,10 +4,35 @@ exports.matricularEstudiante = async (req, res) => {
     const { estudiante_id, semestre_id, ciclo_a_matricular } = req.body;
 
     try {
-        // 1. Obtener el tipo de semestre (I o II)
-        const [semestre] = await db.query('SELECT tipo FROM semestres WHERE id = ?', [semestre_id]);
-        if (semestre.length === 0) {
+          // 1. Obtener datos del semestre, fechas y estado de matrícula
+        const [semestreResult] = await db.query(
+            'SELECT tipo, estado_matricula, fecha_inicio_matricula, fecha_fin_matricula FROM semestres WHERE id = ?', 
+            [semestre_id]
+        );
+        
+        if (semestreResult.length === 0) {
             return res.status(404).json({ message: "Semestre no encontrado." });
+        }
+        
+        const semestre = semestreResult[0];
+        const fechaActual = new Date();
+
+        // 🔥 NUEVA VALIDACIÓN 1: Verificar si el administrador abrió la matrícula de manera global
+        if (semestre.estado_matricula !== 'abierto') {
+            return res.status(400).json({ 
+                message: `El proceso de matrícula para este periodo se encuentra actualmente ${semestre.estado_matricula.toUpperCase()}.` 
+            });
+        }
+
+        // 🔥 NUEVA VALIDACIÓN 2: Verificar si la fecha actual está dentro del plazo permitido
+        const inicio = new Date(semestre.fecha_inicio_matricula);
+        const fin = new Date(semestre.fecha_fin_matricula);
+
+        if (fechaActual < inicio) {
+            return res.status(400).json({ message: "El proceso de matrícula aún no ha comenzado." });
+        }
+        if (fechaActual > fin) {
+            return res.status(400).json({ message: "El plazo límite para matricularse ha vencido. Contacte con administración." });
         }
         
         const tipoSemestre = semestre[0].tipo; // 'I' o 'II'
