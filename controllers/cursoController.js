@@ -1,53 +1,113 @@
 const db = require('../config/db');
 
 exports.obtenerCursosParaMatricula = async (req, res) => {
-    const { estudiante_id, ciclo_a_matricular } = req.query;
+    const { estudiante_id, ciclo_a_matricular, carrera_id } = req.query;
+
+    if (!estudiante_id || !ciclo_a_matricular || !carrera_id) {
+        return res.status(400).json({ 
+            message: "Faltan parámetros obligatorios en la petición." 
+        });
+    }
 
     try {
-        // 1. Traer todos los cursos que pertenecen al ciclo que el alumno quiere matricular
-        const [cursosCiclo] = await db.query(
-            'SELECT id, nombre, ciclo FROM cursos WHERE ciclo = ?', 
-            [ciclo_a_matricular]
-        );
+        const semestre_id = 1; 
 
-        // 2. Traer el historial de notas del alumno en los ciclos anteriores
-        const [historial] = await db.query(`
-            SELECT curso_id, nota_final, resultado 
-            FROM notas 
-            WHERE estudiante_id = ?
-        `, [estudiante_id]);
+        // 1. Obtener cursos regulares de la mañana (Blindado contra Horarios NULL)
+        const [cursosRegulares] = await db.query(`
+            SELECT 
+                c.id, 
+                c.nombre, 
+                c.ciclo, 
+                3 AS creditos,
+                IFNULL(CONCAT(p.nombres, ' ', p.apellidos), 'Por Asignar') AS docente,
+                IFNULL(
+                    (
+                        SELECT GROUP_CONCAT(
+                            CONCAT(UPPER(SUBSTRING(h2.dia_semana, 1, 1)), SUBSTRING(h2.dia_semana, 2), ' (', DATE_FORMAT(h2.hora_inicio, '%H:%i'), '-', DATE_FORMAT(h2.hora_fin, '%H:%i'), ')')
+                            SEPARATOR ' / '
+                        )
+                        FROM horarios h2
+                        WHERE h2.carga_academica_id = ca.id
+                    ),
+                    'Horario por Definir'
+                ) AS horario_completo
+            FROM cursos c
+            LEFT JOIN carga_academica ca ON ca.curso_id = c.id AND ca.semestre_id = ?
+            LEFT JOIN profesores p ON ca.profesor_id = p.id
+            WHERE c.ciclo = ? AND c.carrera_id = ?
+            GROUP BY c.id, c.nombre, c.ciclo, ca.id, p.nombres, p.apellidos
+        `, [semestre_id, ciclo_a_matricular, carrera_id]);
 
-        // 3. Procesar cada curso para enviarle las "órdenes" a React
-        const cursosProcesados = cursosCiclo.map(curso => {
-            // Buscamos si el alumno ya tiene una nota registrada para este curso
-            const notaHistorica = historial.find(h => h.curso_id === curso.id);
+        // 2. Obtener cursos desaprobados (Cargos de la tarde - Blindado)
+        let cursosJalados = [];
+        
+        if (Number(ciclo_a_matricular) > 1) {
+            [cursosJalados] = await db.query(`
+                SELECT 
+                    c.id, 
+                    c.nombre, 
+                    c.ciclo, 
+                    3 AS creditos,
+                    IFNULL(CONCAT(p.nombres, ' ', p.apellidos), 'Prof. Subsanación') AS docente,
+                    IFNULL(
+                        (
+                            SELECT GROUP_CONCAT(
+                                CONCAT(UPPER(SUBSTRING(h3.dia_semana, 1, 1)), SUBSTRING(h3.dia_semana, 2), ' (', DATE_FORMAT(h3.hora_inicio, '%H:%i'), '-', DATE_FORMAT(h3.hora_fin, '%H:%i'), ')')
+                                SEPARATOR ' / '
+                            )
+                            FROM horarios h3
+                            WHERE h3.carga_academica_id = ca.id
+                        ),
+                        'Horario por Definir (Tarde)'
+                    ) AS horario_completo
+                FROM notas n
+                JOIN cursos c ON n.curso_id = c.id
+                LEFT JOIN carga_academica ca ON ca.curso_id = c.id AND ca.semestre_id = ?
+                LEFT JOIN profesores p ON ca.profesor_id = p.id
+                WHERE n.estudiante_id = ? 
+                  AND n.resultado = 'desaprobado' 
+                  AND c.ciclo < ? 
+                  AND c.carrera_id = ?
+                  AND c.id NOT IN (
+                      SELECT curso_id FROM notas WHERE estudiante_id = ? AND resultado = 'aprobado'
+                  )
+                GROUP BY c.id, c.nombre, c.ciclo, ca.id, p.nombres, p.apellidos
+            `, [semestre_id, estudiante_id, ciclo_a_matricular, carrera_id, estudiante_id]);
+        }
 
-            let estadoVisual = 'disponible'; // Puede ser: disponible, aprobado, jalado_bloqueado
-            let mensaje = 'Listo para agregar';
+        // 3. Formatear la lista de cursos regulares (Turno Mañana)
+        const regularesProcesados = cursosRegulares.map((curso, index) => ({
+            id: curso.id,
+            codigo: `SI${curso.ciclo}0${index + 1}`,
+            nombre: curso.nombre,
+            ciclo: curso.ciclo, 
+            creditos: curso.creditos,
+            horario: curso.horario_completo, 
+            docente: curso.docente,          
+            tipo: 'regular',
+            obligatorio: true
+        }));
 
-            if (notaHistorica) {
-                if (notaHistorica.resultado === 'aprobado') {
-                    estadoVisual = 'aprobado';
-                    mensaje = `Ya aprobado con nota: ${notaHistorica.nota_final}`;
-                } else if (notaHistorica.resultado === 'desaprobado') {
-                    // 🔥 AQUÍ SE DETECTA TU CASO: Si está jalado, se marca para ponerse en rojo
-                    estadoVisual = 'jalado_bloqueado';
-                    mensaje = `Desaprobado con ${notaHistorica.nota_final}. Debe repetirse en el semestre correspondiente.`;
-                }
-            }
+        // 4. Formatear la lista de cursos jalados (Turno Tarde)
+        const cargosProcesados = cursosJalados.map((curso, index) => ({
+            id: curso.id,
+            codigo: `CARGO-0${index + 1}`,
+            nombre: curso.nombre,
+            ciclo: curso.ciclo, 
+            creditos: curso.creditos,
+            horario: curso.horario_completo, 
+            docente: curso.docente,
+            tipo: 'cargo',
+            obligatorio: false
+        }));
 
-            return {
-                id: curso.id,
-                nombre: curso.nombre,
-                ciclo: curso.ciclo,
-                estadoVisual: estadoVisual, // React usará esto para pintar en rojo o deshabilitar
-                mensaje: mensaje
-            };
+        res.status(200).json({
+            cursos: [...regularesProcesados, ...cargosProcesados],
+            totalCargosPendientes: cargosProcesados.length
         });
-
-        res.status(200).json(cursosProcesados);
 
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
+

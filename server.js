@@ -4,6 +4,7 @@ const dotenv = require('dotenv');
 const matriculaRoutes = require('./routes/matriculaRoutes');
 const notaRoutes = require('./routes/notaRoutes');
 const estudianteRoutes = require('./routes/estudianteRoutes');
+const cursoRoutes = require('./routes/cursoRoutes');
 
 dotenv.config();
 
@@ -17,6 +18,7 @@ app.use(express.json()); // Permite leer JSON en las peticiones
 app.use('/api/matriculas', matriculaRoutes);
 app.use('/api/notas', notaRoutes);
 app.use('/api/estudiantes', estudianteRoutes);
+app.use('/api/cursos', cursoRoutes);
 
 // Ruta de prueba local
 app.get('/', (req, res) => {

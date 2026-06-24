@@ -1,7 +1,8 @@
 const db = require('../config/db');
 
 exports.matricularEstudiante = async (req, res) => {
-    const { estudiante_id, semestre_id, ciclo_a_matricular } = req.body;
+
+    const { estudiante_id, semestre_id, ciclo_a_matricular, cursos_seleccionados } = req.body; 
 
     try {
         // 1. Obtener datos del semestre y verificar si la matrícula está abierta por fecha
@@ -76,13 +77,26 @@ exports.matricularEstudiante = async (req, res) => {
             }
         }
 
-        // 6. Registrar la matrícula en la base de datos
-        await db.query(`
+               // // 6. Registrar la matrícula en la base de datos (Sin corchetes aquí)
+        const [nuevaMatricula] = await db.query(`
             INSERT INTO matriculas (estudiante_id, semestre_id, ciclo_cursado, estado)
             VALUES (?, ?, ?, ?)
         `, [estudiante_id, semestre_id, ciclo_a_matricular, estadoMatricula]);
 
-        // 7. Actualizar el ciclo asignado en su ficha de estudiante
+        // Ahora sí, extraemos el ID generado correctamente de la primera posición del arreglo devuelto
+        const matriculaId = nuevaMatricula.insertId;
+
+        // 7. Guardar la lista de cursos seleccionados en la tabla detalle
+        if (cursos_seleccionados && cursos_seleccionados.length > 0) {
+            const queriesDetalle = cursos_seleccionados.map(curso_id => {
+                return db.query('INSERT INTO matricula_detalles (matricula_id, curso_id) VALUES (?, ?)', [matriculaId, curso_id]);
+            });
+            
+            // 🔥 El await Promise.all va aquí, AFUERA del mapa, para procesar todo junto
+            await Promise.all(queriesDetalle); 
+        }
+
+        // // 8. Actualizar el ciclo actual en la ficha del estudiante
         await db.query('UPDATE estudiantes SET ciclo_actual = ? WHERE id = ?', [ciclo_a_matricular, estudiante_id]);
 
         res.status(201).json({ 
@@ -90,6 +104,7 @@ exports.matricularEstudiante = async (req, res) => {
             condicion: estadoMatricula,
             cursos_en_cargo: repiteCicloCompleto ? 0 : cantidadJalados
         });
+
 
     } catch (error) {
         if (error.code === 'ER_DUP_ENTRY') {
