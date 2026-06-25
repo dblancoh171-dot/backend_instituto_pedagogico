@@ -101,9 +101,19 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
             obligatorio: false
         }));
 
+       // Validamos de forma real en la base de datos si ya tiene una matrícula registrada
+        const [registroMatricula] = await db.query(`
+            SELECT id FROM matriculas 
+            WHERE estudiante_id = ? AND semestre_id = ? AND ciclo_cursado = ?
+        `, [estudiante_id, semestre_id, ciclo_a_matricular]);
+
+        const yaMatriculado = registroMatricula.length > 0;
+
+        // Enviamos la bandera hacia el frontend de React
         res.status(200).json({
             cursos: [...regularesProcesados, ...cargosProcesados],
-            totalCargosPendientes: cargosProcesados.length
+            totalCargosPendientes: cargosProcesados.length,
+            yaMatriculado: yaMatriculado // 👈 Le avisa a React si ya completó el proceso
         });
 
     } catch (error) {
