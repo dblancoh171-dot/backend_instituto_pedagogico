@@ -20,6 +20,8 @@ app.use('/api/notas', notaRoutes);
 app.use('/api/estudiantes', estudianteRoutes);
 app.use('/api/cursos', cursoRoutes);
 
+app.use('/uploads', express.static('uploads'));
+
 // Ruta de prueba local
 app.get('/', (req, res) => {
     res.json({ mensaje: "¡El backend del instituto está vivo y funcionando localmente!" });
