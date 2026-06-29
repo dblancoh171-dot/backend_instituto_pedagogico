@@ -4,22 +4,41 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
     const { estudiante_id, ciclo_a_matricular, carrera_id } = req.query;
 
     if (!estudiante_id || !ciclo_a_matricular || !carrera_id) {
-        return res.status(400).json({ 
-            message: "Faltan parámetros obligatorios en la petición." 
+        return res.status(400).json({
+            message: "Faltan parámetros obligatorios en la petición."
         });
     }
 
     try {
-        const semestre_id = 1; 
+        const semestre_id = 1;
+        
+        // 🔥 EL TRADUCTOR MÁGICO: Si React envía "I CICLO", "II CICLO" o texto romano, 
+        // lo convertimos instantáneamente al número entero (1, 2, etc.) que exige tu tabla física de cursos.
+        let cicloNumeroFinal = 1;
+        const textoCicloLimpio = String(ciclo_a_matricular).toUpperCase().trim();
 
-        // 1. Obtener cursos regulares de la mañana (Blindado contra Horarios NULL)
+        if (textoCicloLimpio.includes('I CICLO') || textoCicloLimpio === '1' || textoCicloLimpio.includes('IMPAR')) {
+            cicloNumeroFinal = 1;
+        } else if (textoCicloLimpio.includes('II CICLO') || textoCicloLimpio === '2' || textoCicloLimpio.includes('PAR')) {
+            cicloNumeroFinal = 2;
+        } else {
+            // Soporte genérico por si viene el número puro
+            cicloNumeroFinal = Number(parseInt(ciclo_a_matricular) || 1);
+        }
+
+        const idEstudianteSeguro = Number(estudiante_id);
+        const idCarreraSegura = Number(carrera_id);
+
+        console.log(`-> [AIVEN.IO] Buscando Cursos. Ciclo Original: "${ciclo_a_matricular}" | Traducido a Entero: ${cicloNumeroFinal}`);
+
+        // 1. Obtener cursos regulares de la mañana (Filtrando con el ciclo número final legítimo)
         const [cursosRegulares] = await db.query(`
             SELECT 
                 c.id, 
                 c.nombre, 
                 c.ciclo, 
                 3 AS creditos,
-                IFNULL(CONCAT(p.nombres, ' ', p.apellidos), 'Por Asignar') AS docente,
+                IFNULL(CONCAT(u.nombres, ' ', u.apellidos), 'Por Asignar') AS docente,
                 IFNULL(
                     (
                         SELECT GROUP_CONCAT(
@@ -34,21 +53,22 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
             FROM cursos c
             LEFT JOIN carga_academica ca ON ca.curso_id = c.id AND ca.semestre_id = ?
             LEFT JOIN profesores p ON ca.profesor_id = p.id
+            LEFT JOIN usuarios u ON p.usuario_id = u.id
             WHERE c.ciclo = ? AND c.carrera_id = ?
-            GROUP BY c.id, c.nombre, c.ciclo, ca.id, p.nombres, p.apellidos
-        `, [semestre_id, ciclo_a_matricular, carrera_id]);
+            GROUP BY c.id, c.nombre, c.ciclo, ca.id, u.nombres, u.apellidos
+        `, [semestre_id, cicloNumeroFinal, idCarreraSegura]);
 
-        // 2. Obtener cursos desaprobados (Cargos de la tarde - Blindado)
+        // 2. Obtener cursos desaprobados (Cargos de la tarde)
         let cursosJalados = [];
-        
-        if (Number(ciclo_a_matricular) > 1) {
+
+        if (cicloNumeroFinal > 1) {
             [cursosJalados] = await db.query(`
                 SELECT 
                     c.id, 
                     c.nombre, 
                     c.ciclo, 
                     3 AS creditos,
-                    IFNULL(CONCAT(p.nombres, ' ', p.apellidos), 'Prof. Subsanación') AS docente,
+                    IFNULL(CONCAT(u.nombres, ' ', u.apellidos), 'Prof. Subsanación') AS docente,
                     IFNULL(
                         (
                             SELECT GROUP_CONCAT(
@@ -64,6 +84,7 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
                 JOIN cursos c ON n.curso_id = c.id
                 LEFT JOIN carga_academica ca ON ca.curso_id = c.id AND ca.semestre_id = ?
                 LEFT JOIN profesores p ON ca.profesor_id = p.id
+                LEFT JOIN usuarios u ON p.usuario_id = u.id
                 WHERE n.estudiante_id = ? 
                   AND n.resultado = 'desaprobado' 
                   AND c.ciclo < ? 
@@ -71,8 +92,8 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
                   AND c.id NOT IN (
                       SELECT curso_id FROM notas WHERE estudiante_id = ? AND resultado = 'aprobado'
                   )
-                GROUP BY c.id, c.nombre, c.ciclo, ca.id, p.nombres, p.apellidos
-            `, [semestre_id, estudiante_id, ciclo_a_matricular, carrera_id, estudiante_id]);
+                GROUP BY c.id, c.nombre, c.ciclo, ca.id, u.nombres, u.apellidos
+            `, [semestre_id, idEstudianteSeguro, cicloNumeroFinal, idCarreraSegura, idEstudianteSeguro]);
         }
 
         // 3. Formatear la lista de cursos regulares (Turno Mañana)
@@ -80,10 +101,10 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
             id: curso.id,
             codigo: `SI${curso.ciclo}0${index + 1}`,
             nombre: curso.nombre,
-            ciclo: curso.ciclo, 
+            ciclo: curso.ciclo,
             creditos: curso.creditos,
-            horario: curso.horario_completo, 
-            docente: curso.docente,          
+            horario: curso.horario_completo,
+            docente: curso.docente,
             tipo: 'regular',
             obligatorio: true
         }));
@@ -93,31 +114,31 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
             id: curso.id,
             codigo: `CARGO-0${index + 1}`,
             nombre: curso.nombre,
-            ciclo: curso.ciclo, 
+            ciclo: curso.ciclo,
             creditos: curso.creditos,
-            horario: curso.horario_completo, 
+            horario: curso.horario_completo,
             docente: curso.docente,
             tipo: 'cargo',
             obligatorio: false
         }));
 
-       // Validamos de forma real en la base de datos si ya tiene una matrícula registrada
+        // Validamos duplicados usando el entero limpio
         const [registroMatricula] = await db.query(`
             SELECT id FROM matriculas 
             WHERE estudiante_id = ? AND semestre_id = ? AND ciclo_cursado = ?
-        `, [estudiante_id, semestre_id, ciclo_a_matricular]);
+        `, [idEstudianteSeguro, semestre_id, cicloNumeroFinal]);
 
         const yaMatriculado = registroMatricula.length > 0;
 
-        // Enviamos la bandera hacia el frontend de React
-        res.status(200).json({
+        return res.status(200).json({
             cursos: [...regularesProcesados, ...cargosProcesados],
             totalCargosPendientes: cargosProcesados.length,
-            yaMatriculado: yaMatriculado // 👈 Le avisa a React si ya completó el proceso
+            yaMatriculado: yaMatriculado
         });
 
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error("🚨 Error crítico en obtenerCursosParaMatricula:", error);
+        return res.status(500).json({ error: error.message });
     }
 };
 

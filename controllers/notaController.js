@@ -2,32 +2,33 @@ const db = require('../config/db');
 
 // 1. 🔥 NUEVO: Función obligatoria para traer la lista de alumnos inscritos en el curso
 exports.obtenerAlumnosPorCurso = async (req, res) => {
-    const { curso_id, semestre_id } = req.query;
+    const curso_id = req.query.curso_id;
 
-    if (!curso_id || !semestre_id) {
-        return res.status(400).json({ message: "Faltan parámetros obligatorios (curso_id o semestre_id)." });
+    console.log("-> [BACKEND] Solicitando alumnos para Curso ID:", curso_id);
+
+    if (!curso_id) {
+        return res.status(400).json({ message: "El parámetro curso_id es requerido." });
     }
 
     try {
-        const [alumnos] = await db.query(`
-            SELECT 
+        const [rows] = await db.query(`
+            SELECT DISTINCT
                 e.id AS estudiante_id,
-                e.nombres,
-                e.apellidos,
-                e.dni,
-                n.nota_final,
-                n.resultado
+                u.nombres,
+                u.apellidos,
+                u.dni
             FROM matricula_detalles md
-            JOIN matriculas m ON md.matricula_id = m.id
-            JOIN estudiantes e ON m.estudiante_id = e.id
-            LEFT JOIN notas n ON n.estudiante_id = e.id AND n.curso_id = md.curso_id AND n.semestre_id = m.semestre_id
-            WHERE md.curso_id = ? AND m.semestre_id = ?
-            ORDER BY e.apellidos ASC, e.nombres ASC
-        `, [curso_id, semestre_id]);
+            INNER JOIN matriculas m ON md.matricula_id = m.id
+            INNER JOIN estudiantes e ON m.estudiante_id = e.id
+            INNER JOIN usuarios u ON e.usuario_id = u.id
+            WHERE md.curso_id = ?
+            ORDER BY u.apellidos ASC
+        `, [Number(curso_id)]);
 
-        res.status(200).json(alumnos);
+        return res.status(200).json(rows);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error("🚨 Error real en obtenerAlumnosPorCurso:", error);
+        return res.status(500).json({ error: error.message });
     }
 };
 
@@ -125,7 +126,7 @@ exports.obtenerCursosPorDocente = async (req, res) => {
         const diasSemana = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
         const fechaActual = new Date();
         const diaHoy = diasSemana[fechaActual.getDay()];
-        
+
         const fechaManana = new Date();
         fechaManana.setDate(fechaActual.getDate() + 1);
         const diaManana = diasSemana[fechaManana.getDay()];
@@ -191,18 +192,38 @@ exports.obtenerCursosPorDocente = async (req, res) => {
 
 // 🔥 NUEVO: Obtener los datos del perfil del profesor desde la base de datos
 exports.obtenerPerfilProfesor = async (req, res) => {
+    const { id } = req.params; // Este es el profesor_id (Ej: 1)
+
+    console.log(`-> [AIVEN.IO] Extrayendo perfil del Profesor ID: ${id}`);
+
     try {
-        const [profesor] = await db.query(
-            'SELECT id, usuario_id, nombres, apellidos FROM profesores WHERE id = ?', 
-            [req.params.id]
-        );
-        
-        if (profesor.length === 0) {
-            return res.status(404).json({ message: "Profesor no encontrado en el instituto." });
+        // 🔥 LA CORRECCIÓN CLAVE: Cruzamos profesores con usuarios para extraer 
+        // los nombres, apellidos y DNI desde la tabla central humana, y validamos su estado_id
+        const [rows] = await db.query(`
+            SELECT 
+                p.id AS profesor_id,
+                p.codigo_docente,
+                u.id AS usuario_id,
+                u.nombres,
+                u.apellidos,
+                u.dni,
+                u.email,
+                e.nombre AS estado_nombre
+            FROM profesores p
+            INNER JOIN usuarios u ON p.usuario_id = u.id
+            LEFT JOIN estados e ON p.estado_id = e.id
+            WHERE p.id = ?
+        `, [Number(id)]);
+
+        if (rows.length === 0) {
+            return res.status(404).json({ message: "Profesor no encontrado en los registros institucionales." });
         }
-        
-        res.status(200).json(profesor[0]);
+
+        // Enviamos el objeto limpio al Frontend con toda su identidad resuelta
+        res.status(200).json(rows[0]);
+
     } catch (error) {
+        console.error("Error crítico en obtenerPerfilProfesor:", error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -221,7 +242,7 @@ exports.guardarContenidoSesion = async (req, res) => {
         // 1. Actualizamos el título de la sesión en la base de datos
         if (titulo !== undefined) {
             await db.query(
-                'UPDATE sesiones SET titulo = ? WHERE id = ?', 
+                'UPDATE sesiones SET titulo = ? WHERE id = ?',
                 [titulo.trim(), Number(sesion_id)]
             );
         }
@@ -313,7 +334,7 @@ exports.obtenerSesionesPorCurso = async (req, res) => {
             'SELECT id, curso_id, semestre_id, numero_sesion, titulo, fecha_clase FROM sesiones WHERE curso_id = ? AND semestre_id = ? ORDER BY numero_sesion ASC',
             [Number(curso_id), Number(semestre_id)]
         );
-        
+
         console.log(`-> Sesiones encontradas en Aiven.io: ${rows.length} filas.`);
         res.status(200).json(rows);
     } catch (error) {
@@ -346,23 +367,29 @@ exports.crearActividadEvaluativa = async (req, res) => {
             (sesion_id, titulo, descripcion, tipo_documento, archivo_adjunto_url, fecha_limite, puntuacion_maxima) 
             VALUES (?, ?, ?, ?, ?, ?, ?)
         `, [
-            Number(sesion_id), 
-            titulo.trim(), 
-            descripcion ? descripcion.trim() : null, 
-            tipo_documento, 
-            archivoUrl, 
-            fecha_limite, 
+            Number(sesion_id),
+            titulo.trim(),
+            descripcion ? descripcion.trim() : null,
+            tipo_documento,
+            archivoUrl,
+            fecha_limite,
             Number(puntuacion_maxima || 20)
         ]);
 
-        res.status(201).json({ 
-            message: "¡Actividad evaluativa programada con éxito!", 
-            actividad_id: resultado.insertId 
+        res.status(201).json({
+            message: "¡Actividad evaluativa programada con éxito!",
+            actividad_id: resultado.insertId
         });
 
     } catch (error) {
         console.error("Error al crear actividad evaluativa:", error);
-        res.status(500).json({ error: error.message });
+        
+        // 🛡️ CAPTURA EL CANDADO DE MYSQL: Si el Trigger aborta la inserción por llegar a 5
+        if (error.sqlState === '45000') {
+            return res.status(400).json({ message: error.message });
+        }
+        
+        return res.status(500).json({ error: error.message });
     }
 };
 
@@ -382,6 +409,12 @@ exports.obtenerActividadesPorSesion = async (req, res) => {
                 descripcion, 
                 tipo_documento, 
                 archivo_adjunto_url, 
+                fecha_limite,
+                -- 🔥 EXTRAEMOS LA FECHA EN FORMATO EXIGIDO POR EL NAVEGADOR (YYYY-MM-DD)
+                DATE_FORMAT(fecha_limite, '%Y-%m-%d') AS fecha_plana,
+                -- 🔥 EXTRAEMOS LA HORA EN FORMATO EXIGIDO POR EL NAVEGADOR (HH:MM)
+                DATE_FORMAT(fecha_limite, '%H:%i') AS hora_plana,
+                -- Este se mantiene para pintar la tarjeta azul en la pantalla principal
                 DATE_FORMAT(fecha_limite, '%d de %M, %h:%i %p') AS fecha_formateada,
                 puntuacion_maxima 
             FROM actividades_evaluativas 
@@ -394,6 +427,116 @@ exports.obtenerActividadesPorSesion = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+
+
+
+// 🔥 NUEVO: Actualizar los datos de una actividad existente
+exports.actualizarActividadCronograma = async (req, res) => {
+    const { id, titulo, descripcion, tipo_documento, fecha_limite, puntuacion_maxima } = req.body;
+
+    if (!id) return res.status(400).json({ message: "El ID de la actividad es obligatorio." });
+
+    try {
+        // 1. Modificamos los campos de texto base
+        await db.query(`
+            UPDATE actividades_evaluativas 
+            SET titulo = ?, descripcion = ?, tipo_documento = ?, fecha_limite = ?, puntuacion_maxima = ?
+            WHERE id = ?
+        `, [titulo.trim(), descripcion ? descripcion.trim() : null, tipo_documento, fecha_limite, Number(puntuacion_maxima), Number(id)]);
+
+        // 2. Si el profesor reemplazó el PDF guía, actualizamos su URL
+        if (req.file) {
+            const archivoUrl = `/uploads/${req.file.filename}`;
+            await db.query('UPDATE actividades_evaluativas SET archivo_adjunto_url = ? WHERE id = ?', [archivoUrl, Number(id)]);
+        }
+
+        res.status(200).json({ message: "Registro actualizado de forma exitosa." });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
+
+// 🔥 NUEVO: Eliminar una actividad evaluativa por su ID
+exports.eliminarActividadCronograma = async (req, res) => {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ message: "El ID de la actividad es requerido." });
+
+    try {
+        await db.query('DELETE FROM actividades_evaluativas WHERE id = ?', [Number(id)]);
+        res.status(200).json({ message: "Actividad removida con éxito de Aiven.io" });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
+
+
+
+
+
+// 🔥 NUEVO: Procesar y asentar las asistencias de un aula en Aiven.io
+exports.guardarAsistenciaAula = async (req, res) => {
+    const { sesion_id, registros } = req.body;
+
+    if (!sesion_id || !registros || !Array.isArray(registros) || registros.length === 0) {
+        return res.status(400).json({ message: "Parámetros inválidos o lote de alumnos vacío." });
+    }
+
+    try {
+        // Mapeamos el lote de marcas en un arreglo de arreglos para el insert masivo
+        const valoresLote = registros.map(reg => [
+            Number(sesion_id),
+            Number(reg.estudiante_id),
+            Number(reg.asistio)
+        ]);
+
+        console.log(`-> [AIVEN.IO] Procesando actualización masiva para Sesión ID: ${sesion_id}`);
+
+        // 🔥 LA MAGIA DE MYSQL: Inserta si no existe, o hace UPDATE en el mismo ID si ya existe
+        // gracias al índice UNIQUE relacional, manteniendo los IDs correlativos intactos.
+        await db.query(`
+            INSERT INTO control_asistencias (sesion_id, estudiante_id, asistio) 
+            VALUES ? 
+            ON DUPLICATE KEY UPDATE asistio = VALUES(asistio)
+        `, [valoresLote]);
+
+        console.log(`-> [ÉXITO] Asistencias actualizadas correctamente sobre sus mismos registros.`);
+        res.status(200).json({ message: "¡Asistencias actualizadas de forma limpia en el repositorio!" });
+
+    } catch (error) {
+        console.error("Error crítico en guardarAsistenciaAula:", error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
+
+// 🔥 NUEVO: Obtener el histórico de asistencias guardadas de una sesión
+exports.obtenerAsistenciasGuardadas = async (req, res) => {
+    const { sesion_id } = req.query;
+
+    if (!sesion_id) {
+        return res.status(400).json({ message: "El parámetro sesion_id es requerido." });
+    }
+
+    try {
+        const [rows] = await db.query(`
+            SELECT estudiante_id, asistio 
+            FROM control_asistencias 
+            WHERE sesion_id = ?
+        `, [Number(sesion_id)]);
+
+        res.status(200).json(rows);
+    } catch (error) {
+        console.error("Error en obtenerAsistenciasGuardadas:", error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
 
 
 

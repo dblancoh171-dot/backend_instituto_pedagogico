@@ -49,6 +49,15 @@ router.get('/actividades-sesion', notaController.obtenerActividadesPorSesion);
 // Ruta para procesar el formulario del modal flotante (Soporta 1 archivo adjunto)
 router.post('/crear-actividad', upload.single('archivo'), notaController.crearActividadEvaluativa);
 
+router.post('/actualizar-actividad-cronograma', upload.single('archivo'), notaController.actualizarActividadCronograma);
+
+router.post('/eliminar-actividad-cronograma', notaController.eliminarActividadCronograma);
+
+router.post('/guardar-asistencia', notaController.guardarAsistenciaAula);
+
+router.get('/obtener-asistencias-guardadas', notaController.obtenerAsistenciasGuardadas);
+
+
 
 module.exports = router;
 

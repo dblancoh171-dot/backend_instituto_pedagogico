@@ -1,20 +1,19 @@
 const db = require('../config/db');
 
 exports.matricularEstudiante = async (req, res) => {
-
-    const { estudiante_id, semestre_id, ciclo_a_matricular, cursos_seleccionados } = req.body; 
+    const { estudiante_id, semestre_id, ciclo_a_matricular, cursos_seleccionados } = req.body;
 
     try {
         // 1. Obtener datos del semestre y verificar si la matrícula está abierta por fecha
         const [semestreResult] = await db.query(
-            'SELECT tipo, estado_matricula, fecha_inicio_matricula, fecha_fin_matricula FROM semestres WHERE id = ?', 
+            'SELECT tipo, estado_matricula, fecha_inicio_matricula, fecha_fin_matricula FROM semestres WHERE id = ?',
             [semestre_id]
         );
-        
+
         if (semestreResult.length === 0) {
             return res.status(404).json({ message: "Semestre no encontrado." });
         }
-        
+
         const semestre = semestreResult[0];
         const fechaActual = new Date();
 
@@ -26,9 +25,10 @@ exports.matricularEstudiante = async (req, res) => {
             return res.status(400).json({ message: "Fuera de la fecha límite de matrícula." });
         }
 
-        // 2. Validar correspondencia de ciclos (Pares / Impares)
+        // 2. Validar correspondencia de ciclos (Asegurando conversión a número entero)
         const tipoSemestre = semestre.tipo; // 'I' o 'II'
-        const esCicloImpar = ciclo_a_matricular % 2 !== 0;
+        const numCicloSolicitado = Number(ciclo_a_matricular || 1);
+        const esCicloImpar = numCicloSolicitado % 2 !== 0;
 
         if (tipoSemestre === 'I' && !esCicloImpar) {
             return res.status(400).json({ message: "En el semestre I solo se pueden dictar ciclos IMPARES." });
@@ -43,7 +43,7 @@ exports.matricularEstudiante = async (req, res) => {
             return res.status(404).json({ message: "Estudiante no encontrado." });
         }
 
-        const cicloAnterior = estudianteResult[0].ciclo_actual;
+        const cicloAnterior = Number(estudianteResult[0].ciclo_actual || 1);
 
         // 4. Contar cuántos cursos desaprobó exactamente en ese ciclo anterior
         const [notasJaladas] = await db.query(`
@@ -55,35 +55,33 @@ exports.matricularEstudiante = async (req, res) => {
 
         const cantidadJalados = notasJaladas[0].total_desaprobados;
 
-        // 🔥 REGLA DE NEGOCIO ACTUALIZADA: Determinar si repite ciclo (3 o más cursos jalados)
+        // Determinar si repite ciclo (3 o más cursos jalados)
         const repiteCicloCompleto = cantidadJalados >= 3;
-        const estadoMatricula = repiteCicloCompleto ? 'repitente' : 'regular';
+        const estadoMatricula = repiteCicloCompleto ? 'irregular' : 'regular';
 
         // 5. Validar si el ciclo solicitado corresponde a su situación académica
         if (repiteCicloCompleto) {
             // Si jaló 3 o más, OBLIGATORIAMENTE debe volver a matricularse en el mismo ciclo
-            if (ciclo_a_matricular !== cicloAnterior) {
-                return res.status(400).json({ 
-                    message: `Repites el ciclo por completo. Tienes ${cantidadJalados} cursos desaprobados en el ciclo ${cicloAnterior}. Debes volver a cursarlo.` 
+            if (numCicloSolicitado !== cicloAnterior) {
+                return res.status(400).json({
+                    message: `Repites el ciclo por completo. Tienes ${cantidadJalados} cursos desaprobados en el ciclo ${cicloAnterior}. Debes volver a cursarlo.`
                 });
             }
         } else {
             // Si jaló 0, 1 o 2 cursos, se le permite avanzar al ciclo siguiente inmediato
-            // (Excepción: si es su primera matrícula y está en ciclo 1 de origen)
-            if (ciclo_a_matricular !== (cicloAnterior + 1) && !(cicloAnterior === 1 && ciclo_a_matricular === 1)) {
-                return res.status(400).json({ 
-                    message: `Operación inválida. Al tener ${cantidadJalados} cursos desaprobados, puedes avanzar al ciclo ${cicloAnterior + 1}.` 
+            if (numCicloSolicitado !== (cicloAnterior + 1) && !(cicloAnterior === 1 && numCicloSolicitado === 1)) {
+                return res.status(400).json({
+                    message: `Operación inválida. Al tener ${cantidadJalados} cursos desaprobados, puedes avanzar al ciclo ${cicloAnterior + 1}.`
                 });
             }
         }
 
-               // // 6. Registrar la matrícula en la base de datos (Sin corchetes aquí)
+        // 6. Registrar la matrícula en la base de datos usando las variables correctas y la columna 'condicion'
         const [nuevaMatricula] = await db.query(`
-            INSERT INTO matriculas (estudiante_id, semestre_id, ciclo_cursado, estado)
+            INSERT INTO matriculas (estudiante_id, semestre_id, ciclo_cursado, condicion)
             VALUES (?, ?, ?, ?)
-        `, [estudiante_id, semestre_id, ciclo_a_matricular, estadoMatricula]);
+        `, [estudiante_id, semestre_id, numCicloSolicitado, estadoMatricula]);
 
-        // Ahora sí, extraemos el ID generado correctamente de la primera posición del arreglo devuelto
         const matriculaId = nuevaMatricula.insertId;
 
         // 7. Guardar la lista de cursos seleccionados en la tabla detalle
@@ -91,26 +89,26 @@ exports.matricularEstudiante = async (req, res) => {
             const queriesDetalle = cursos_seleccionados.map(curso_id => {
                 return db.query('INSERT INTO matricula_detalles (matricula_id, curso_id) VALUES (?, ?)', [matriculaId, curso_id]);
             });
-            
-            // 🔥 El await Promise.all va aquí, AFUERA del mapa, para procesar todo junto
-            await Promise.all(queriesDetalle); 
+
+            await Promise.all(queriesDetalle);
         }
 
-        // // 8. Actualizar el ciclo actual en la ficha del estudiante
-        await db.query('UPDATE estudiantes SET ciclo_actual = ? WHERE id = ?', [ciclo_a_matricular, estudiante_id]);
+        // 8. Actualizar el ciclo actual en la ficha del estudiante
+        await db.query('UPDATE estudiantes SET ciclo_actual = ? WHERE id = ?', [numCicloSolicitado, estudiante_id]);
 
-        res.status(201).json({ 
-            message: "Estudiante matriculado con éxito", 
+        return res.status(201).json({
+            message: "Estudiante matriculado con éxito",
             condicion: estadoMatricula,
             cursos_en_cargo: repiteCicloCompleto ? 0 : cantidadJalados
         });
-
 
     } catch (error) {
         if (error.code === 'ER_DUP_ENTRY') {
             return res.status(400).json({ message: "El estudiante ya está matriculado en este semestre." });
         }
-        res.status(500).json({ error: error.message });
+        console.error("🚨 Error crítico en matricularEstudiante:", error);
+        return res.status(500).json({ error: error.message });
     }
 };
+
 
