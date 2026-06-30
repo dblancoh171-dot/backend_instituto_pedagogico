@@ -153,7 +153,7 @@ exports.obtenerCursosMatriculadosEstudiante = async (req, res) => {
             LEFT JOIN profesores p ON ca.profesor_id = p.id
             LEFT JOIN usuarios u ON p.usuario_id = u.id
             WHERE m.estudiante_id = ? AND m.semestre_id = ?
-            ORDER BY c.ciclo ASC, c.nombre ASC
+            ORDER BY c.ciclo ASC, c.id ASC
         `, [Number(estudiante_id), Number(semestre_id)]);
 
         return res.status(200).json(cursos);

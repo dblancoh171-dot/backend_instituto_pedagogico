@@ -5,4 +5,6 @@ const cursoController = require('../controllers/cursoController');
 // Enlaza la URL /disponibles con la función del controlador
 router.get('/disponibles', cursoController.obtenerCursosParaMatricula);
 
+router.get('/cronograma-estudiante', cursoController.obtenerSesionesParaEstudiante);
+
 module.exports = router;
