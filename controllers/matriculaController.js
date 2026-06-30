@@ -112,3 +112,55 @@ exports.matricularEstudiante = async (req, res) => {
 };
 
 
+
+// 🟢 NUEVO: Obtener los cursos en los que el estudiante se encuentra matriculado legítimamente
+exports.obtenerCursosMatriculadosEstudiante = async (req, res) => {
+    const { estudiante_id, semestre_id } = req.query;
+
+    if (!estudiante_id || !semestre_id) {
+        return res.status(400).json({
+            message: "Faltan parámetros obligatorios en la petición (estudiante_id o semestre_id)."
+        });
+    }
+
+    try {
+        console.log(`-> [AIVEN.IO] Extrayendo carga académica para Estudiante ID: ${estudiante_id} | Semestre ID: ${semestre_id}`);
+
+        // Consulta relacional de alta precisión para jalar los cursos y sus respectivos profesores
+        const [cursos] = await db.query(`
+            SELECT 
+                c.id AS curso_id,
+                c.nombre AS curso_nombre,
+                c.ciclo,
+                CONCAT('SI', c.ciclo, '0', c.id) AS codigo_curso,
+                3 AS creditos,
+                IFNULL(CONCAT(u.nombres, ' ', u.apellidos), 'Por Asignar') AS docente_nombre,
+                IFNULL(
+                    (
+                        SELECT GROUP_CONCAT(
+                            CONCAT(UPPER(SUBSTRING(h.dia_semana, 1, 1)), SUBSTRING(h.dia_semana, 2), ' (', DATE_FORMAT(h.hora_inicio, '%H:%i'), '-', DATE_FORMAT(h.hora_fin, '%H:%i'), ')')
+                            SEPARATOR ' / '
+                        )
+                        FROM horarios h
+                        WHERE h.carga_academica_id = ca.id
+                    ),
+                    'Horario por Definir'
+                ) AS horario_completo
+            FROM matriculas m
+            INNER JOIN matricula_detalles md ON m.id = md.matricula_id
+            INNER JOIN cursos c ON md.curso_id = c.id
+            LEFT JOIN carga_academica ca ON ca.curso_id = c.id AND ca.semestre_id = m.semestre_id
+            LEFT JOIN profesores p ON ca.profesor_id = p.id
+            LEFT JOIN usuarios u ON p.usuario_id = u.id
+            WHERE m.estudiante_id = ? AND m.semestre_id = ?
+            ORDER BY c.ciclo ASC, c.nombre ASC
+        `, [Number(estudiante_id), Number(semestre_id)]);
+
+        return res.status(200).json(cursos);
+
+    } catch (error) {
+        console.error("🚨 Error crítico en obtenerCursosMatriculadosEstudiante:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};
+
