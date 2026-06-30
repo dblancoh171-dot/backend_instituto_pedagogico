@@ -331,8 +331,22 @@ exports.obtenerSesionesPorCurso = async (req, res) => {
     try {
         // Incluimos fecha_clase de forma explícita para que haga match perfecto con tu Workbench
         const [rows] = await db.query(
-            'SELECT id, curso_id, semestre_id, numero_sesion, titulo, fecha_clase FROM sesiones WHERE curso_id = ? AND semestre_id = ? ORDER BY numero_sesion ASC',
-            [Number(curso_id), Number(semestre_id)]
+                    `SELECT 
+                s.id, 
+                s.curso_id, 
+                s.semestre_id, 
+                s.numero_sesion, 
+                s.titulo, 
+                s.fecha_clase,
+                IF(
+                    (SELECT COUNT(*) FROM control_asistencias ca WHERE ca.sesion_id = s.id) > 0, 
+                    'realizado', 
+                    'pendiente'
+                ) AS estado_asistencia
+            FROM sesiones s 
+            WHERE s.curso_id = ? AND s.semestre_id = ? 
+            ORDER BY s.numero_sesion ASC`
+            , [Number(curso_id), Number(semestre_id)]
         );
 
         console.log(`-> Sesiones encontradas en Aiven.io: ${rows.length} filas.`);
@@ -383,12 +397,12 @@ exports.crearActividadEvaluativa = async (req, res) => {
 
     } catch (error) {
         console.error("Error al crear actividad evaluativa:", error);
-        
+
         // 🛡️ CAPTURA EL CANDADO DE MYSQL: Si el Trigger aborta la inserción por llegar a 5
         if (error.sqlState === '45000') {
             return res.status(400).json({ message: error.message });
         }
-        
+
         return res.status(500).json({ error: error.message });
     }
 };
