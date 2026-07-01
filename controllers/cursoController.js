@@ -154,32 +154,48 @@ exports.obtenerSesionesParaEstudiante = async (req, res) => {
     }
 
     try {
-        console.log(`-> [AIVEN.IO] Extrayendo cronograma del Curso ID: ${curso_id} para Alumno ID: ${estudiante_id}`);
+        console.log(`-> [AIVEN.IO] Extrayendo cronograma dinámico del Curso ID: ${curso_id}`);
 
-        // Consulta relacional de alta velocidad
+        // 1. Jalamos el esqueleto principal de las sesiones dictadas
         const [sesiones] = await db.query(`
             SELECT 
                 s.id AS sesion_id,
                 s.numero_sesion,
                 s.titulo AS sesion_titulo,
                 DATE_FORMAT(s.fecha_clase, '%d/%m/%Y') AS fecha_clase_formateada,
-                -- 📁 Subquery: Trae el archivo de la clase si el profesor subió material
                 (SELECT url_archivo FROM sesion_materiales sm WHERE sm.sesion_id = s.id ORDER BY sm.id DESC LIMIT 1) AS url_material,
                 (SELECT nombre_archivo FROM sesion_materiales sm WHERE sm.sesion_id = s.id ORDER BY sm.id DESC LIMIT 1) AS nombre_material,
-                -- 👥 Subquery: Verifica de forma reactiva la asistencia del alumno en esta sesión
                 IFNULL(
-                    (SELECT CASE 
-                        WHEN ca.asistio = 1 THEN 'asistio'
-                        WHEN ca.asistio = 0 THEN 'falto'
-                     END 
-                     FROM control_asistencias ca 
-                     WHERE ca.sesion_id = s.id AND ca.estudiante_id = ?),
+                    (SELECT CASE WHEN ca.asistio = 1 THEN 'asistio' ELSE 'falto' END 
+                     FROM control_asistencias ca WHERE ca.sesion_id = s.id AND ca.estudiante_id = ?),
                     'no_registrado'
                 ) AS mi_asistencia
             FROM sesiones s
             WHERE s.curso_id = ? AND s.semestre_id = ?
             ORDER BY s.numero_sesion ASC
         `, [Number(estudiante_id), Number(curso_id), Number(semestre_id)]);
+
+        // 2. 🔥 LA MAGIA MULTI-ACTIVIDADES: Barremos cada sesión y le incrustamos sus tareas reales de la BD
+        for (let i = 0; i < sesiones.length; i++) {
+          const [actividades] = await db.query(`
+                SELECT 
+                    ae.id,
+                    ae.titulo,
+                    ae.tipo_documento,
+                    ae.descripcion AS \`desc\`,
+                    DATE_FORMAT(ae.fecha_limite, '%d %b %Y, %H:%i') AS fecha,
+                    'PENDIENTE' AS estado,
+                    
+                    -- 🔥 CORRECCIÓN QUIRÚRGICA: Leemos tu columna real de la BD
+                    ae.archivo_adjunto_url AS archivo_guia
+                FROM actividades_evaluativas ae
+                WHERE ae.sesion_id = ?
+                ORDER BY ae.id ASC
+            `, [sesiones[i].sesion_id]);
+
+            // Se lo inyectamos de forma dinámica al objeto de la sesión
+            sesiones[i].actividades = actividades;
+        }
 
         return res.status(200).json(sesiones);
 
@@ -188,3 +204,4 @@ exports.obtenerSesionesParaEstudiante = async (req, res) => {
         return res.status(500).json({ error: error.message });
     }
 };
+
