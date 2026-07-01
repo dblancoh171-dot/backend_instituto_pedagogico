@@ -205,3 +205,42 @@ exports.obtenerSesionesParaEstudiante = async (req, res) => {
     }
 };
 
+
+
+// 🟢 NUEVO: Obtener todas las actividades evaluativas programadas para un curso específico
+exports.obtenerActividadesPorCurso = async (req, res) => {
+    const { curso_id } = req.query;
+
+    if (!curso_id) {
+        return res.status(400).json({
+            message: "Falta el parámetro obligatorio 'curso_id' en la consulta."
+        });
+    }
+
+    try {
+        console.log(`-> [AIVEN.IO] Buscando catálogo de evaluaciones para el Curso ID: ${curso_id}`);
+
+        // Consulta de precisión que extrae las tareas cruzando con el número de sesión
+        const [actividades] = await db.query(`
+            SELECT 
+                ae.id AS actividad_id,
+                ae.titulo AS actividad_titulo,
+                ae.tipo_documento,
+                ae.descripcion AS \`desc\`,
+                DATE_FORMAT(ae.fecha_limite, '%d %b %Y, %H:%i') AS fecha_limite_formateada,
+                s.numero_sesion,
+                s.titulo AS sesion_titulo
+            FROM actividades_evaluativas ae
+            INNER JOIN sesiones s ON ae.sesion_id = s.id
+            WHERE s.curso_id = ?
+            ORDER BY s.numero_sesion ASC, ae.id ASC
+        `, [Number(curso_id)]);
+
+        return res.status(200).json(actividades);
+
+    } catch (error) {
+        console.error("🚨 Error crítico en obtenerActividadesPorCurso:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};
+
