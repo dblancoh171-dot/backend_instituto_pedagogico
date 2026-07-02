@@ -1,3 +1,4 @@
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -5,6 +6,8 @@ const matriculaRoutes = require('./routes/matriculaRoutes');
 const notaRoutes = require('./routes/notaRoutes');
 const estudianteRoutes = require('./routes/estudianteRoutes');
 const cursoRoutes = require('./routes/cursoRoutes');
+const entregaRoutes = require('./routes/entregaRoutes');
+
 
 dotenv.config();
 
@@ -21,6 +24,10 @@ app.use('/api/estudiantes', estudianteRoutes);
 app.use('/api/cursos', cursoRoutes);
 
 app.use('/uploads', express.static('uploads'));
+
+app.use('/api/entregas', entregaRoutes);
+
+app.use('/uploads/entregas', express.static(path.join(__dirname, 'uploads/entregas')));
 
 // Ruta de prueba local
 app.get('/', (req, res) => {

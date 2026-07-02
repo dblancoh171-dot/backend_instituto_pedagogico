@@ -162,7 +162,7 @@ exports.obtenerSesionesParaEstudiante = async (req, res) => {
                 s.id AS sesion_id,
                 s.numero_sesion,
                 s.titulo AS sesion_titulo,
-                DATE_FORMAT(s.fecha_clase, '%d/%m/%Y') AS fecha_clase_formateada,
+                DATE_FORMAT(s.fecha_clase, '%d %b %Y, %I:%i %p') AS fecha_clase_formateada,
                 (SELECT url_archivo FROM sesion_materiales sm WHERE sm.sesion_id = s.id ORDER BY sm.id DESC LIMIT 1) AS url_material,
                 (SELECT nombre_archivo FROM sesion_materiales sm WHERE sm.sesion_id = s.id ORDER BY sm.id DESC LIMIT 1) AS nombre_material,
                 IFNULL(
@@ -177,23 +177,31 @@ exports.obtenerSesionesParaEstudiante = async (req, res) => {
 
         // 2. 🔥 LA MAGIA MULTI-ACTIVIDADES: Barremos cada sesión y le incrustamos sus tareas reales de la BD
         for (let i = 0; i < sesiones.length; i++) {
-          const [actividades] = await db.query(`
+            const [actividades] = await db.query(`
                 SELECT 
                     ae.id,
                     ae.titulo,
                     ae.tipo_documento,
                     ae.descripcion AS \`desc\`,
-                    DATE_FORMAT(ae.fecha_limite, '%d %b %Y, %H:%i') AS fecha,
-                    'PENDIENTE' AS estado,
+                    ae.archivo_adjunto_url AS archivo_guia,
+                    DATE_FORMAT(ae.fecha_limite, '%d %b %Y, %I:%i %p') AS fecha,
                     
-                    -- 🔥 CORRECCIÓN QUIRÚRGICA: Leemos tu columna real de la BD
-                    ae.archivo_adjunto_url AS archivo_guia
+                    -- 📁 CRUCE DE DATOS REACTIVO:
+                    -- Jalamos los datos del envío que confirmamos en tu monitor
+                    ea.archivo_alumno_url,
+                    ea.nombre_archivo_estudiante AS nombre_real_alumno,
+                    ea.comentario_docente AS comentario_previo,
+                    DATE_FORMAT(ea.fecha_entrega, '%d %b %Y, %I:%i %p') AS fecha_entrega_formateada,
+                     
+                    
+                    -- Condicional: Si existe un registro, su estado cambia a COMPLETO, de lo contrario PENDIENTE
+                    IF(ea.id IS NOT NULL, 'COMPLETO', 'PENDIENTE') AS estado
                 FROM actividades_evaluativas ae
+                LEFT JOIN entregas_alumnos ea ON ea.actividad_id = ae.id AND ea.estudiante_id = ?
                 WHERE ae.sesion_id = ?
                 ORDER BY ae.id ASC
-            `, [sesiones[i].sesion_id]);
+            `, [Number(estudiante_id), sesiones[i].sesion_id]);
 
-            // Se lo inyectamos de forma dinámica al objeto de la sesión
             sesiones[i].actividades = actividades;
         }
 
@@ -227,7 +235,7 @@ exports.obtenerActividadesPorCurso = async (req, res) => {
                 ae.titulo AS actividad_titulo,
                 ae.tipo_documento,
                 ae.descripcion AS \`desc\`,
-                DATE_FORMAT(ae.fecha_limite, '%d %b %Y, %H:%i') AS fecha_limite_formateada,
+                DATE_FORMAT(ae.fecha_limite, '%d %b %Y, %I:%i %p') AS fecha_limite_formateada,
                 s.numero_sesion,
                 s.titulo AS sesion_titulo
             FROM actividades_evaluativas ae
