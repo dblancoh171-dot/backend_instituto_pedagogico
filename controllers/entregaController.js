@@ -100,3 +100,104 @@ exports.registrarEntregaActividadEstudiante = async (req, res) => {
         return res.status(500).json({ error: error.message });
     }
 };
+
+
+
+// 🟢 ADICIÓN CRÍTICA FINANCIADA: Recupera la nómina completa y cruza con las entregas reales en Aiven.io
+// 🟢 CONEXIÓN EN CASCADA CORREGIDA SEGÚN TUS TABLAS DE WORKBENCH
+exports.obtenerDetalleEntregasPorActividad = async (req, res) => {
+    const { actividad_id, curso_id } = req.query;
+
+    if (!actividad_id || !curso_id) {
+        return res.status(400).json({ 
+            message: "Faltan parámetros obligatorios en la consulta (actividad_id y curso_id)." 
+        });
+    }
+
+    try {
+        console.log(`-> [AIVEN.IO] Ejecutando cruce relacional en cascada perfecta...`);
+
+        // 🔗 EL QUERY SUPREMO: Conectamos estudiantes -> usuarios -> matriculas -> matricula_detalles
+        const [reporte] = await db.query(`
+            SELECT 
+                e.id AS estudiante_id,
+                CONCAT(u.apellidos, ', ', u.nombres) AS nombre_completo_alumno,
+                e.codigo_estudiante AS codigo_alumno,
+                
+                -- Campos de la bandeja de entregas
+                ea.id AS entrega_id,
+                ea.archivo_alumno_url,
+                ea.nombre_archivo_estudiante,
+                ea.comentario_docente AS comentario_alumno,
+                DATE_FORMAT(ea.fecha_entrega, '%d %b %Y, %I:%i %p') AS fecha_entrega_formateada,
+                ea.nota,
+                ea.estado_evaluacion
+            FROM estudiantes e
+            -- 👥 UNIÓN 1: Jalamos los nombres desde la tabla usuarios
+            INNER JOIN usuarios u ON e.usuario_id = u.id
+            
+            -- 🛡️ UNIÓN 2: Conectamos al estudiante con su cabecera de matrícula
+            INNER JOIN matriculas m ON m.estudiante_id = e.id
+            
+            -- 📖 UNIÓN 3: Conectamos la cabecera con el detalle del curso según tu imagen de Workbench
+            INNER JOIN matricula_detalles md ON md.matricula_id = m.id
+            
+            -- 📁 UNIÓN 4: Cruzamos con los archivos subidos por el alumno
+            LEFT JOIN entregas_alumnos ea ON ea.actividad_id = ? AND ea.estudiante_id = e.id
+            WHERE md.curso_id = ?
+            ORDER BY nombre_completo_alumno ASC
+        `, [Number(actividad_id), Number(curso_id)]);
+
+        return res.status(200).json(reporte);
+
+    } catch (error) {
+        console.error("🚨 Error crítico interno en obtenerDetalleEntregasPorActividad:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};
+
+
+// 🟢 NUEVO: Guardar o actualizar la calificación dada por el profesor a un estudiante
+exports.guardarCalificacionEntrega = async (req, res) => {
+    const { actividad_id, estudiante_id, nota } = req.body;
+
+    // Validación rigurosa de los rangos de nota vigentes en el instituto
+    if (actividad_id === undefined || estudiante_id === undefined || nota === undefined) {
+        return res.status(400).json({ message: "Faltan parámetros obligatorios (actividad_id, estudiante_id, nota)." });
+    }
+
+    const notaNum = Number(nota);
+    if (isNaN(notaNum) || notaNum < 0 || notaNum > 20) {
+        return res.status(400).json({ message: "La calificación debe ser un valor numérico válido entre 00 y 20." });
+    }
+
+    try {
+        console.log(`-> [AIVEN.IO] Asentando Nota: ${notaNum} para Alumno ID: ${estudiante_id} en Actividad: ${actividad_id}`);
+
+        // Ejecutamos un UPDATE directo sobre la entrega del alumno
+        const [resultado] = await db.query(`
+            UPDATE entregas_alumnos 
+            SET 
+                nota = ?, 
+                estado_evaluacion = 'CALIFICADO'
+            WHERE actividad_id = ? AND estudiante_id = ?
+        `, [notaNum, Number(actividad_id), Number(estudiante_id)]);
+
+        // Si el alumno no ha subido archivo, no hay registro en entregas_alumnos. Creamos el registro vacío con la nota.
+        if (resultado.affectedRows === 0) {
+            await db.query(`
+                INSERT INTO entregas_alumnos 
+                    (actividad_id, estudiante_id, nombre_archivo_estudiante, archivo_alumno_url, nota, estado_evaluacion)
+                VALUES (?, ?, 'Sin archivo', '/uploads/entregas/vacio.pdf', ?, 'CALIFICADO')
+            `, [Number(actividad_id), Number(estudiante_id), notaNum]);
+        }
+
+        return res.status(200).json({ message: "Calificación registrada con éxito absoluto." });
+
+    } catch (error) {
+        console.error("🚨 Error crítico al guardar calificación:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};
+
+

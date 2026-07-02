@@ -192,6 +192,8 @@ exports.obtenerSesionesParaEstudiante = async (req, res) => {
                     ea.nombre_archivo_estudiante AS nombre_real_alumno,
                     ea.comentario_docente AS comentario_previo,
                     DATE_FORMAT(ea.fecha_entrega, '%d %b %Y, %I:%i %p') AS fecha_entrega_formateada,
+                    ea.nota,
+                    ea.estado_evaluacion,
                      
                     
                     -- Condicional: Si existe un registro, su estado cambia a COMPLETO, de lo contrario PENDIENTE
