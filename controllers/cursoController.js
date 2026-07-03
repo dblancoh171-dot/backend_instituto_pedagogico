@@ -143,9 +143,9 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
 
         // Validamos duplicados usando el entero limpio
         const [registroMatricula] = await db.query(`
-            SELECT id FROM matriculas 
-            WHERE estudiante_id = ? AND semestre_id = ? AND ciclo_cursado = ?
-        `, [idEstudianteSeguro, semestre_id, cicloNumeroFinal]);
+    SELECT id FROM matriculas
+    WHERE estudiante_id = ? AND semestre_id = ?
+`, [idEstudianteSeguro, semestre_id]);
 
         const yaMatriculado = registroMatricula.length > 0;
 
@@ -153,7 +153,7 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
             cursos: [...regularesProcesados, ...cargosProcesados],
             totalCargosPendientes: cargosProcesados.length,
             yaMatriculado: yaMatriculado
-        });
+});
 
     } catch (error) {
         console.error("🚨 Error crítico en obtenerCursosParaMatricula:", error);
