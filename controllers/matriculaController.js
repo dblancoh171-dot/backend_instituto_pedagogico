@@ -45,13 +45,24 @@ exports.matricularEstudiante = async (req, res) => {
 
         const cicloAnterior = Number(estudianteResult[0].ciclo_actual || 1);
 
-        // 4. Contar cuántos cursos desaprobó exactamente en ese ciclo anterior
-        const [notasJaladas] = await db.query(`
-            SELECT COUNT(*) as total_desaprobados 
-            FROM notas n
-            JOIN cursos c ON n.curso_id = c.id
-            WHERE n.estudiante_id = ? AND c.ciclo = ? AND n.resultado = 'desaprobado'
-        `, [estudiante_id, cicloAnterior]);
+       const [notasJaladas] = await db.query(`
+            SELECT COUNT(*) AS total_desaprobados
+            FROM (
+                -- Subconsulta: Agrupamos por curso del ciclo pasado para sacar promedios ponderados reales
+                SELECT 
+                    nge.curso_id,
+                    -- Multiplicamos cada nota por su peso institucional configurado
+                    SUM(nge.nota * (cng.peso_porcentaje / 100)) AS promedio_calculado
+                FROM notas_generales_estudiantes nge
+                INNER JOIN configuracion_notas_global cng ON nge.configuracion_nota_id = cng.id
+                INNER JOIN cursos c ON nge.curso_id = c.id
+                WHERE nge.estudiante_id = ? 
+                  AND c.ciclo = ?
+                GROUP BY nge.curso_id
+                -- 🛡️ CANDADO DE EVALUACIÓN: Filtramos solo las materias cuyo promedio final quedó menor a 10.5 (Desaprobado)
+                HAVING promedio_calculado < 10.5
+            ) AS actas_reprobadas
+        `, [Number(estudiante_id), Number(cicloAnterior)]);
 
         const cantidadJalados = notasJaladas[0].total_desaprobados;
 

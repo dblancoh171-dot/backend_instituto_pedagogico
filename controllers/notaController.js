@@ -33,41 +33,56 @@ exports.obtenerAlumnosPorCurso = async (req, res) => {
 };
 
 // 2. Tu función de registro corregida y adaptada con la columna 'resultado'
+// 🟢 REFACTORIZACIÓN SUPREMA: Guardado y actualización adaptado a tu nueva estructura dinámica
 exports.registrarNota = async (req, res) => {
-    const { estudiante_id, curso_id, semestre_id, nota_final } = req.body;
+    // 🚀 Cambiamos 'nota_final' por la propiedad dinámica 'nota' y el ID del casillero padre
+    const { estudiante_id, curso_id, configuracion_nota_id, nota } = req.body;
 
-    if (nota_final < 0 || nota_final > 20) {
-        return res.status(400).json({ message: "La nota debe estar entre 0 y 20." });
+    // Validación rigurosa de parámetros de red antes de tocar MySQL
+    if (estudiante_id === undefined || curso_id === undefined || configuracion_nota_id === undefined || nota === undefined) {
+        return res.status(400).json({ message: "Faltan parámetros obligatorios (estudiante_id, curso_id, configuracion_nota_id, nota)." });
     }
 
-    // 🔥 CALCULO AUTOMÁTICO DE ESTADO ACADÉMICO MINEDU (Aprobado >= 11)
-    const resultado = nota_final >= 11 ? 'aprobado' : 'desaprobado';
+    const notaNum = Number(nota);
+    if (isNaN(notaNum) || notaNum < 0 || notaNum > 20) {
+        return res.status(400).json({ message: "La calificación debe estar estrictamente entre 00 y 20." });
+    }
 
     try {
-        const [matricula] = await db.query(
-            'SELECT id FROM matriculas WHERE estudiante_id = ? AND semestre_id = ?',
-            [estudiante_id, semestre_id]
-        );
+        console.log(`-> [AIVEN.IO] Guardando Nota: ${notaNum} para Alumno: ${estudiante_id} | Casillero Config: ${configuracion_nota_id}`);
+
+        // 🛡️ CONTROL DE MATRÍCULA: Verificamos que el alumno pertenezca legalmente a esa sección
+        const [matricula] = await db.query(`
+            SELECT m.id 
+            FROM matriculas m
+            INNER JOIN matricula_detalles md ON md.matricula_id = m.id
+            WHERE m.estudiante_id = ? AND md.curso_id = ?
+        `, [Number(estudiante_id), Number(curso_id)]);
 
         if (matricula.length === 0) {
-            return res.status(400).json({ message: "El estudiante no está matriculado en este semestre." });
+            return res.status(400).json({ message: "El estudiante no registra matrícula activa en esta asignatura." });
         }
 
-        // 🔥 CORRECCIÓN: Insertamos 5 valores y actualizamos ambos en caso de duplicados
+        // 🚀 INSERCIÓN O ACTUALIZACIÓN EN CASCADA: Evita duplicados gracias a tu ON DUPLICATE KEY UPDATE
         await db.query(`
-            INSERT INTO notas (estudiante_id, curso_id, semestre_id, nota_final, resultado)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO notas_generales_estudiantes 
+                (estudiante_id, curso_id, configuracion_nota_id, nota) 
+            VALUES (?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE 
-                nota_final = VALUES(nota_final),
-                resultado = VALUES(resultado)
-        `, [estudiante_id, curso_id, semestre_id, nota_final, resultado]);
+                nota = VALUES(nota),
+                fecha_registro = CURRENT_TIMESTAMP
+        `, [Number(estudiante_id), Number(curso_id), Number(configuracion_nota_id), notaNum]);
 
-        res.status(200).json({ message: "Nota registrada correctamente.", resultado });
+        return res.status(200).json({
+            message: "Calificación institucional registrada correctamente en el repositorio."
+        });
 
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error("🚨 Error crítico en registrarNota:", error);
+        return res.status(500).json({ error: error.message });
     }
 };
+
 
 
 
@@ -113,7 +128,6 @@ exports.obtenerCursosPorDocente = async (req, res) => {
 
 
 
-// 🔥 REGLA CRÍTICA: Asegúrate de que empiece exactamente con 'exports.'
 exports.obtenerCursosPorDocente = async (req, res) => {
     const { profesor_id, semestre_id } = req.query;
 
@@ -166,28 +180,39 @@ exports.obtenerCursosPorDocente = async (req, res) => {
                     'Sin clases próximas'
                 ) AS estatus_clase,
 
-                -- ALERTA INTERACTIVA 2: Cuenta cuántos alumnos matriculados no tienen nota en este curso
+                -- 🔥 ALERTA INTERACTIVA 2 CORREGIDA: Detecta alumnos que tengan casilleros vacíos de calificación
                 (
-                    SELECT COUNT(md.id)
+                    SELECT COUNT(DISTINCT m.estudiante_id)
                     FROM matricula_detalles md
-                    JOIN matriculas m ON md.matricula_id = m.id
-                    LEFT JOIN notas n ON n.estudiante_id = m.estudiante_id AND n.curso_id = md.curso_id AND n.semestre_id = m.semestre_id
+                    INNER JOIN matriculas m ON md.matricula_id = m.id
                     WHERE md.curso_id = c.id 
-                      AND m.semestre_id = ca.semestre_id 
-                      AND n.nota_final IS NULL
+                      AND m.semestre_id = ca.semestre_id
+                      -- Un alumno entra al conteo si la cantidad de notas reales que tiene registradas 
+                      -- es menor al total de evaluaciones obligatorias que el admin configuró para este ciclo
+                      AND (
+                          SELECT COUNT(*) 
+                          FROM notas_generales_estudiantes nge
+                          WHERE nge.estudiante_id = m.estudiante_id AND nge.curso_id = md.curso_id
+                      ) < (
+                          SELECT COUNT(*) 
+                          FROM configuracion_notas_global cng
+                          WHERE cng.semestre_id = ca.semestre_id
+                      )
                 ) AS notas_pendientes_count
 
             FROM carga_academica ca
             JOIN cursos c ON ca.curso_id = c.id
             WHERE ca.profesor_id = ? AND ca.semestre_id = ?
             ORDER BY c.ciclo ASC, c.nombre ASC
-        `, [diaHoy, diaManana, profesor_id, semestre_id]);
+        `, [diaHoy, diaManana, Number(profesor_id), Number(semestre_id)]);
 
         res.status(200).json(cursos);
     } catch (error) {
+        console.error("🚨 Error crítico en obtenerCursosPorDocente:", error);
         res.status(500).json({ error: error.message });
     }
 };
+
 
 
 // 🔥 NUEVO: Obtener los datos del perfil del profesor desde la base de datos
@@ -331,7 +356,7 @@ exports.obtenerSesionesPorCurso = async (req, res) => {
     try {
         // Incluimos fecha_clase de forma explícita para que haga match perfecto con tu Workbench
         const [rows] = await db.query(
-                    `SELECT 
+            `SELECT 
                 s.id, 
                 s.curso_id, 
                 s.semestre_id, 

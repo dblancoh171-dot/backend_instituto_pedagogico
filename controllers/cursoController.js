@@ -11,7 +11,7 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
 
     try {
         const semestre_id = 1;
-        
+
         // 🔥 EL TRADUCTOR MÁGICO: Si React envía "I CICLO", "II CICLO" o texto romano, 
         // lo convertimos instantáneamente al número entero (1, 2, etc.) que exige tu tabla física de cursos.
         let cicloNumeroFinal = 1;
@@ -80,20 +80,39 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
                         ),
                         'Horario por Definir (Tarde)'
                     ) AS horario_completo
-                FROM notas n
-                JOIN cursos c ON n.curso_id = c.id
+                FROM (
+                    -- Subconsulta A: Encontramos todos los cursos donde el alumno sacó un promedio menor a 10.5
+                    SELECT nge.curso_id
+                    FROM notas_generales_estudiantes nge
+                    INNER JOIN configuracion_notas_global cng ON nge.configuracion_nota_id = cng.id
+                    WHERE nge.estudiante_id = ?
+                    GROUP BY nge.curso_id
+                    HAVING SUM(nge.nota * (cng.peso_porcentaje / 100)) < 10.5
+                ) AS cursos_reprobados
+                -- Cruzamos con el catálogo de cursos institucional
+                INNER JOIN cursos c ON cursos_reprobados.curso_id = c.id
                 LEFT JOIN carga_academica ca ON ca.curso_id = c.id AND ca.semestre_id = ?
                 LEFT JOIN profesores p ON ca.profesor_id = p.id
                 LEFT JOIN usuarios u ON p.usuario_id = u.id
-                WHERE n.estudiante_id = ? 
-                  AND n.resultado = 'desaprobado' 
-                  AND c.ciclo < ? 
+                WHERE c.ciclo < ? 
                   AND c.carrera_id = ?
+                  -- 🛡️ ESCUDO HISTÓRICO REQUERIMIENTO: El curso NO debe haber sido aprobado con éxito en algún ciclo posterior
                   AND c.id NOT IN (
-                      SELECT curso_id FROM notas WHERE estudiante_id = ? AND resultado = 'aprobado'
+                      SELECT sub_nge.curso_id
+                      FROM notas_generales_estudiantes sub_nge
+                      INNER JOIN configuracion_notas_global sub_cng ON sub_nge.configuracion_nota_id = sub_cng.id
+                      WHERE sub_nge.estudiante_id = ?
+                      GROUP BY sub_nge.curso_id
+                      HAVING SUM(sub_nge.nota * (sub_cng.peso_porcentaje / 100)) >= 10.5
                   )
                 GROUP BY c.id, c.nombre, c.ciclo, ca.id, u.nombres, u.apellidos
-            `, [semestre_id, idEstudianteSeguro, cicloNumeroFinal, idCarreraSegura, idEstudianteSeguro]);
+            `, [
+                Number(idEstudianteSeguro), // Para la Subconsulta A de reprobados
+                Number(semestre_id),
+                Number(cicloNumeroFinal),
+                Number(idCarreraSegura),
+                Number(idEstudianteSeguro)  // Para el escudo de exclusión de aprobados
+            ]);
         }
 
         // 3. Formatear la lista de cursos regulares (Turno Mañana)
