@@ -273,3 +273,61 @@ exports.obtenerActividadesPorCurso = async (req, res) => {
     }
 };
 
+
+
+// 🟢 NUEVO: Consultar de forma real el cronograma semestral para controlar los desvíos en React
+exports.obtenerEstadoCalendarioAcademico = async (req, res) => {
+    const { semestre_id } = req.query;
+
+    if (!semestre_id) {
+        return res.status(400).json({ message: "Falta el parámetro obligatorio semestre_id." });
+    }
+
+    try {
+        console.log(`-> [AIVEN.IO] Evaluando etapas de tiempo para Semestre ID: ${semestre_id}`);
+
+        // Consultamos de forma directa las 4 columnas de tu imagen previa de Workbench
+        const [semestre] = await db.query(`
+            SELECT fecha_inicio_matricula, fecha_fin_matricula, fecha_inicio_clases, fecha_fin_clases
+            FROM semestres
+            WHERE id = ?
+        `, [Number(semestre_id)]);
+
+        if (semestre.length === 0) {
+            return res.status(404).json({ message: "El semestre solicitado no existe en el repositorio." });
+        }
+
+        const datosSemestre = semestre[0];
+        const ahora = new Date(); // ⏱️ Reloj del sistema actual: 3 de Julio de 2026
+        
+        const finMatricula = new Date(datosSemestre.fecha_fin_matricula); // 📅 12 de Julio
+        const inicioClases = new Date(datosSemestre.fecha_inicio_clases);   // 📅 15 de Agosto
+
+        // 🧠 DETERMINACIÓN MATEMÁTICA DE LA ETAPA ACTUAL
+        // Las asignaturas se congelan si estamos en Fase de Matrícula Abierta O en Fase de Procesamiento de Actas (Intermedio)
+        // Es decir, "Mis Cursos" se bloquea si la fecha de hoy es menor al inicio oficial de clases (15 de Agosto)
+        const deshabilitarCursosAlumno = ahora < inicioClases;
+
+        const periodoMatriculaVencido = ahora > finMatricula;
+
+        
+
+        // Despachamos el paquete integral de directrices de seguridad rumbo a React
+        return res.status(200).json({
+            fases: {
+                deshabilitarCursosAlumno: deshabilitarCursosAlumno, // 🔥 Pasará a TRUE en tu pantalla
+                deshabilitarNotasAlumno: deshabilitarCursosAlumno,
+
+                periodoMatriculaVencido: periodoMatriculaVencido
+            },
+            fechas_oficiales: {
+                limite_matricula: finMatricula,
+                apertura_clases: inicioClases
+            }
+        });
+
+    } catch (error) {
+        console.error("🚨 Error crítico interno en obtenerEstadoCalendarioAcademico:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};

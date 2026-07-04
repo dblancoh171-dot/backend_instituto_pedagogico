@@ -9,5 +9,7 @@ router.get('/cronograma-estudiante', cursoController.obtenerSesionesParaEstudian
 
 router.get('/actividades-por-curso', cursoController.obtenerActividadesPorCurso);
 
+router.get('/estado-calendario', cursoController.obtenerEstadoCalendarioAcademico);
+
 
 module.exports = router;
