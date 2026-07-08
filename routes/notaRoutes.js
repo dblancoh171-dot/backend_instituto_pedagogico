@@ -57,6 +57,9 @@ router.post('/guardar-asistencia', notaController.guardarAsistenciaAula);
 
 router.get('/obtener-asistencias-guardadas', notaController.obtenerAsistenciasGuardadas);
 
+router.post('/publicar-acta', notaController.publicarActaNotas);
+
+
 
 
 module.exports = router;

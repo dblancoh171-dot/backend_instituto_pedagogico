@@ -3,85 +3,237 @@ const db = require('../config/db');
 // 1. 🔥 NUEVO: Función obligatoria para traer la lista de alumnos inscritos en el curso
 exports.obtenerAlumnosPorCurso = async (req, res) => {
     const curso_id = req.query.curso_id;
+    const semestre_id = req.query.semestre_id;
 
-    console.log("-> [BACKEND] Solicitando alumnos para Curso ID:", curso_id);
-
-    if (!curso_id) {
-        return res.status(400).json({ message: "El parámetro curso_id es requerido." });
+    if (!curso_id || !semestre_id) {
+        return res.status(400).json({ message: "Los parámetros curso_id y semestre_id son estrictamente requeridos." });
     }
 
     try {
-        const [rows] = await db.query(`
-            SELECT DISTINCT
-                e.id AS estudiante_id,
-                u.nombres,
-                u.apellidos,
+        console.log(`-> [AIVEN.IO] Extrayendo cronograma dinámico para Semestre: ${semestre_id} | Curso: ${curso_id}`);
+
+        // 🚀 CONSULTA 1: Traemos de forma real las evaluaciones parametrizadas por el administrador para este periodo
+        const [configuracion] = await db.query(
+            "SELECT id, nombre_nota, peso_porcentaje, fecha_inicio_ingreso, fecha_fin_ingreso  FROM configuracion_notas_global WHERE semestre_id = ? ORDER BY num_evaluacion ASC",
+            [Number(semestre_id)]
+        );
+
+        // 🚀 CONSULTA 2: Jalamos los datos base de los estudiantes matriculados en esta sección
+        const [alumnos] = await db.query(
+            `SELECT DISTINCT 
+                e.id AS estudiante_id, 
+                u.nombres, 
+                u.apellidos, 
                 u.dni
             FROM matricula_detalles md
             INNER JOIN matriculas m ON md.matricula_id = m.id
             INNER JOIN estudiantes e ON m.estudiante_id = e.id
             INNER JOIN usuarios u ON e.usuario_id = u.id
-            WHERE md.curso_id = ?
-            ORDER BY u.apellidos ASC
-        `, [Number(curso_id)]);
+            WHERE md.curso_id = ? AND m.semestre_id = ?
+            ORDER BY u.apellidos ASC`,
+            [Number(curso_id), Number(semestre_id)]
+        );
 
-        return res.status(200).json(rows);
+        // 🚀 CONSULTA 3: Si hay alumnos y configuraciones vigentes, jalamos el universo de notas existente
+        let calificacionesExistentes = [];
+        if (alumnos.length > 0 && configuracion.length > 0) {
+            const idsEstudiantes = alumnos.map(a => a.estudiante_id);
+            const idsConfiguracion = configuracion.map(c => c.id);
+
+            // 🔥 REPARACIÓN MAESTRA: Quitamos 'AND semestre_id = ?' y removemos su argumento del arreglo [01/07/2026]
+            const [notas] = await db.query(
+                `SELECT estudiante_id, configuracion_nota_id, nota, nota_publicada 
+         FROM notas_generales_estudiantes 
+         WHERE curso_id = ? 
+         AND estudiante_id IN (?) AND configuracion_nota_id IN (?)`,
+                [Number(curso_id), idsEstudiantes, idsConfiguracion]
+            );
+            calificacionesExistentes = notas;
+        }
+
+        // 🧠 MAPEO EN MEMORIA: Estructuramos el JSON dinámicamente acoplando las celdas encontradas
+        const listaAlumnosProcesados = alumnos.map(alumno => {
+            const mapaNotasEstudiante = {};
+            const mapaPublicadosEstudiante = {};
+
+            // Recorremos las columnas reales encontradas en la BD y buscamos si este alumno tiene nota ahí
+            configuracion.forEach(col => {
+                const registroNota = calificacionesExistentes.find(n =>
+                    n.estudiante_id === alumno.estudiante_id && n.configuracion_nota_id === col.id
+                );
+                // Si existe el registro se inyecta su valor real, si no, se manda nulo para dejar la caja limpia
+                mapaNotasEstudiante[col.id] = registroNota ? registroNota.nota : null;
+                mapaPublicadosEstudiante[col.id] = registroNota ? registroNota.nota_publicada : 0;
+            });
+
+            return {
+                id: alumno.estudiante_id,
+                estudiante_id: alumno.estudiante_id,
+                apellidos_nombres: `${alumno.apellidos} ${alumno.nombres}`,
+                dni: alumno.dni,
+                notas: mapaNotasEstudiante,
+                publicados: mapaPublicadosEstudiante
+            };
+        });
+
+        // Retornamos el paquete integral de datos reales rumbo a React
+        return res.status(200).json({
+            alumnos: listaAlumnosProcesados,
+            configuracionNotas: configuracion
+        });
+
     } catch (error) {
-        console.error("🚨 Error real en obtenerAlumnosPorCurso:", error);
+        console.error("🚨 Error real en obtenerAlumnosPorCurso Dinámico:", error);
         return res.status(500).json({ error: error.message });
     }
 };
 
+
 // 2. Tu función de registro corregida y adaptada con la columna 'resultado'
 // 🟢 REFACTORIZACIÓN SUPREMA: Guardado y actualización adaptado a tu nueva estructura dinámica
 exports.registrarNota = async (req, res) => {
-    // 🚀 Cambiamos 'nota_final' por la propiedad dinámica 'nota' y el ID del casillero padre
-    const { estudiante_id, curso_id, configuracion_nota_id, nota } = req.body;
-
-    // Validación rigurosa de parámetros de red antes de tocar MySQL
-    if (estudiante_id === undefined || curso_id === undefined || configuracion_nota_id === undefined || nota === undefined) {
-        return res.status(400).json({ message: "Faltan parámetros obligatorios (estudiante_id, curso_id, configuracion_nota_id, nota)." });
-    }
-
-    const notaNum = Number(nota);
-    if (isNaN(notaNum) || notaNum < 0 || notaNum > 20) {
-        return res.status(400).json({ message: "La calificación debe estar estrictamente entre 00 y 20." });
-    }
+    // Capturamos las variables base desestructurando el cuerpo de la petición [01/7]
+    const { estudiante_id, curso_id, semestre_id, configuracion_nota_id, nota, registros } = req.body;
 
     try {
-        console.log(`-> [AIVEN.IO] Guardando Nota: ${notaNum} para Alumno: ${estudiante_id} | Casillero Config: ${configuracion_nota_id}`);
+        // 🚀 ESCENARIO A: GUARDADO MASIVO (Al presionar el botón azul "Guardar Cambios")
+        if (registros && Array.isArray(registros) && registros.length > 0) {
+            console.log(`-> [AIVEN.IO] Procesando lote masivo de ${registros.length} calificaciones con amnistía.`);
 
-        // 🛡️ CONTROL DE MATRÍCULA: Verificamos que el alumno pertenezca legalmente a esa sección
+            // 🔍 A.1 JALAMOS EL CRONOGRAMA DE FECHAS OFICIAL DE LA BD PARA ESTE SEMESTRE
+            // 🔥 LA CORRECCIÓN MAESTRA: Soportamos "semestre" tal como lo envía tu consola de Firefox
+            // 🚀 REPARACIÓN SÓNICA: Soportamos Semestre (Con S mayúscula), semestre (minúscula) y semestre_id
+            const IDSemestreSeguro = semestre_id || req.body.semestre_id || req.body.semestre || req.body.Semestre;
+
+            console.log(`-> [BACKEND] Identificador de ciclo recuperado y verificado: ${IDSemestreSeguro}`);
+
+            console.log(`-> [BACKEND] Identificador de ciclo recuperado: ${IDSemestreSeguro}`);
+
+            const [cronograma] = await db.query(
+                `SELECT id, fecha_inicio_ingreso, fecha_fin_ingreso 
+                 FROM configuracion_notas_global 
+                 WHERE semestre_id = ? 
+                 ORDER BY num_evaluacion ASC`,
+                [Number(IDSemestreSeguro)]
+            );
+
+            // Si el query da vacío por culpa del ID indefinido, el backend avisa de forma semántica en vez de colapsar
+            if (!cronograma || cronograma.length === 0) {
+                return res.status(422).json({ message: `No se registró el calendario institucional para el semestre ID: ${IDSemestreSeguro}` });
+            }
+
+            // ⏱️ Capturamos la hora actual del servidor en tiempo real
+            const ahora = new Date();
+
+            // Ubicamos cuál es la última evaluación del listado (ejemplo: la Evaluación 4)
+            const ultimaEvaluacion = cronograma[cronograma.length - 1];
+
+            // Evaluamos matemáticamente si la fecha de hoy ya se encuentra en el periodo de la última unidad
+            const yaEstamosEnLaUltimaEvaluacion = ultimaEvaluacion &&
+                (ahora >= new Date(ultimaEvaluacion.fecha_inicio_ingreso) &&
+                    ahora <= new Date(ultimaEvaluacion.fecha_fin_ingreso));
+
+            // 🛡️ A.2 ADUANA DE AMNISTÍA: Analizamos cada celda del lote antes de tocar MySQL
+            for (const reg of registros) {
+                // Buscamos el ID en cualquier variante sintáctica que mande el Front
+                const idEvaluacionSeguro = reg.configuracion_nota_id || reg.configuracion_evaluacion_id || reg.id;
+
+                if (!idEvaluacionSeguro) {
+                    console.log("⚠️ Registro omitido en el escáner por falta de ID relacional:", reg);
+                    continue;
+                }
+
+                // Filtro preventivo de rango 0-20 [01/10]
+                if (reg.nota !== null && reg.nota !== '') {
+                    const nNum = parseFloat(reg.nota);
+                    if (isNaN(nNum) || nNum < 0 || nNum > 20) {
+                        return res.status(422).json({ message: `La nota ${reg.nota} es inválida. Debe estar entre 0 y 20.` });
+                    }
+                }
+
+                // Buscamos el rango cronológico oficial asignado a esta nota en Workbench
+                const configCelda = cronograma.find(c => Number(c.id) === Number(idEvaluacionSeguro));
+
+                if (configCelda) {
+                    const fueraDeFechaCronologica = ahora < new Date(configCelda.fecha_inicio_ingreso) ||
+                        ahora > new Date(configCelda.fecha_fin_ingreso);
+
+                    // Cláusula de amnistía elástica
+                    if (fueraDeFechaCronologica && !yaEstamosEnLaUltimaEvaluacion) {
+                        return res.status(422).json({
+                            message: "Protección del Servidor: El plazo establecido en el calendario institucional para registrar calificaciones en esta unidad ha expirado."
+                        });
+                    }
+                }
+            }
+
+            // Convertimos el lote enviado por React en un arreglo de arreglos puro para MySQL
+            const valoresLote = registros.map(reg => [
+                Number(reg.estudiante_id),
+                Number(reg.curso_id),
+                // 🔥 ADUANA SEMÁNTICA: Sincronizamos que use la variable segura mapeada arriba
+                Number(reg.configuracion_nota_id || reg.id),
+                reg.nota === null || reg.nota === '' ? null : Number(reg.nota)
+            ]);
+
+            // Inserción o actualización masiva elástica apoyada en tu UNIQUE KEY compuesta
+            await db.query(`
+                INSERT INTO notas_generales_estudiantes 
+                    (estudiante_id, curso_id, configuracion_nota_id, nota)
+                VALUES ?
+                ON DUPLICATE KEY UPDATE
+                    nota = VALUES(nota),
+                    fecha_registro = CURRENT_TIMESTAMP
+            `, [valoresLote]);
+
+            return res.status(200).json({
+                message: "¡Lote masivo de calificaciones sincronizado con éxito total!"
+            });
+        }
+
+        // 🚀 ESCENARIO B: GUARDADO INDIVIDUAL (Mantenemos intacto tu bloque base)
+        if (estudiante_id === undefined || curso_id === undefined || configuracion_nota_id === undefined || nota === undefined) {
+            return res.status(400).json({ message: "Faltan parámetros obligatorios para procesar la nota." });
+        }
+
+        let notaValidadaSql = null;
+        if (nota !== null && nota !== undefined && nota !== '') {
+            const notaNum = parseFloat(nota);
+            if (isNaN(notaNum) || notaNum < 0 || notaNum > 20) {
+                return res.status(422).json({ message: "La calificación es inválida. Debe estar estrictamente entre 00.00 y 20.00." });
+            }
+            notaValidadaSql = notaNum;
+        }
+
+        // CONTROL DE MATRÍCULA INTERNO DE TU PÁGINA 3
         const [matricula] = await db.query(`
-            SELECT m.id 
-            FROM matriculas m
+            SELECT m.id FROM matriculas m
             INNER JOIN matricula_detalles md ON md.matricula_id = m.id
             WHERE m.estudiante_id = ? AND md.curso_id = ?
         `, [Number(estudiante_id), Number(curso_id)]);
 
         if (matricula.length === 0) {
-            return res.status(400).json({ message: "El estudiante no registra matrícula activa en esta asignatura." });
+            return res.status(400).json({ message: "El estudiante no registra matrícula activa." });
         }
 
-        // 🚀 INSERCIÓN O ACTUALIZACIÓN EN CASCADA: Evita duplicados gracias a tu ON DUPLICATE KEY UPDATE
+        // Inserción unitaria limpia de tu monitor
         await db.query(`
-            INSERT INTO notas_generales_estudiantes 
-                (estudiante_id, curso_id, configuracion_nota_id, nota) 
+            INSERT INTO notas_generales_estudiantes
+                (estudiante_id, curso_id, configuracion_nota_id, nota)
             VALUES (?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE 
+            ON DUPLICATE KEY UPDATE
                 nota = VALUES(nota),
                 fecha_registro = CURRENT_TIMESTAMP
-        `, [Number(estudiante_id), Number(curso_id), Number(configuracion_nota_id), notaNum]);
+        `, [Number(estudiante_id), Number(curso_id), Number(configuracion_nota_id), notaValidadaSql]);
 
-        return res.status(200).json({
-            message: "Calificación institucional registrada correctamente en el repositorio."
-        });
+        return res.status(200).json({ message: "Calificación unitaria registrada correctamente." });
 
     } catch (error) {
-        console.error("🚨 Error crítico en registrarNota:", error);
+        console.error("🚨 Error crítico en registrarNota Híbrido con Amnistía:", error);
         return res.status(500).json({ error: error.message });
     }
 };
+
 
 
 
@@ -574,6 +726,66 @@ exports.obtenerAsistenciasGuardadas = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
+
+
+exports.publicarActaNotas = async (req, res) => {
+    // Capturamos el configuracion_nota_id dinámico de la evaluación que se va a cerrar [30/06/2026]
+    const { curso_id, semestre_id, configuracion_nota_id } = req.body;
+
+    console.log(`-> [AIVEN.IO] Aduana Estricta: Evaluando firma progresiva Evaluación ID: ${configuracion_nota_id} | Curso: ${curso_id}`);
+
+    if (!curso_id || !semestre_id || !configuracion_nota_id) {
+        return res.status(400).json({ message: "Todos los parámetros relacionales son estrictamente requeridos." });
+    }
+
+    try {
+        // 🔍 1. CONTAMOS EL UNIVERSO REAL DE ALUMNOS MATRICULADOS EN ESTA SECCIÓN (Ejemplo: Dan 2 Alumnos) [30/06/2026]
+        const [totalMatriculados] = await db.query(`
+            SELECT COUNT(DISTINCT m.estudiante_id) AS total
+            FROM matricula_detalles md
+            INNER JOIN matriculas m ON md.matricula_id = m.id
+            WHERE md.curso_id = ? AND m.semestre_id = ?
+        `, [Number(curso_id), Number(semestre_id)]);
+
+        // 🔍 2. CONTAMOS CUÁNTOS DE ESOS ALUMNOS REGISTRAN CALIFICACIONES REALES (Diferentes de NULL o vacío) [30/06/2026]
+        const [totalCalificados] = await db.query(`
+            SELECT COUNT(*) AS total
+            FROM notas_generales_estudiantes
+            WHERE curso_id = ? AND configuracion_nota_id = ? 
+              AND nota IS NOT NULL AND nota <> ''
+        `, [Number(curso_id), Number(configuracion_nota_id)]);
+
+        // Extraemos las métricas puras de los resultados del pool de MySQL [30/06/2026]
+        const alumnosInscritos = totalMatriculados[0]?.total || 0;
+        const alumnosConNota = totalCalificados[0]?.total || 0;
+
+        // 🔒 3. EL CANDADO DE PROTECCIÓN EN EL SERVIDOR: Tolerancia cero a casilleros en blanco [30/06/2026]
+        if (alumnosConNota < alumnosInscritos) {
+            console.log(`❌ [RECHAZADO] Intento de firma incompleta: Matriculados: ${alumnosInscritos} | Calificados: ${alumnosConNota}`);
+            return res.status(422).json({
+                message: `Protección del Servidor: No se puede publicar el acta progresiva. Detectamos que faltan registrar las calificaciones de ${alumnosInscritos - alumnosConNota} alumno(s) en esta unidad.`
+            });
+        }
+
+        // 🔒 4. LA FIRMA DIGITAL: Si todos tienen nota, MySQL ejecuta el update progresivo de forma segura [30/06/2026]
+        const [resultado] = await db.query(`
+            UPDATE notas_generales_estudiantes
+            SET 
+                nota_publicada = 1,
+                fecha_publicacion = CURRENT_TIMESTAMP
+            WHERE curso_id = ? AND configuracion_nota_id = ?
+        `, [Number(curso_id), Number(configuracion_nota_id)]);
+
+        return res.status(200).json({
+            message: `¡Evaluación oficial publicada con éxito! Se aplicó un candado institucional a las celdas correspondientes.`
+        });
+
+    } catch (error) {
+        console.error("🚨 Error crítico en la aduana estricta de publicación:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};
+
 
 
 
