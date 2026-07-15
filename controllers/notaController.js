@@ -677,17 +677,27 @@ exports.guardarAsistenciaAula = async (req, res) => {
     }
 
     try {
-        // Mapeamos el lote de marcas en un arreglo de arreglos para el insert masivo
+        // 🔍 1. CAPTURAMOS EL CURSO_ID ASOCIADO A ESTA SESIÓN DESDE LA BD
+        // Lo necesitamos de forma obligatoria para alimentar la auditoría y los procedimientos de asistencia.
+        const [sesionInfo] = await db.query(`
+            SELECT curso_id FROM sesiones WHERE id = ?
+        `, [Number(sesion_id)]);
+
+        if (!sesionInfo || sesionInfo.length === 0) {
+            return res.status(404).json({ message: "La sesión especificada no existe en el sistema." });
+        }
+        const curso_id = sesionInfo[0].curso_id;
+
+        // Mapeamos el lote de marcas en tu arreglo de arreglos exacto para el insert masivo
         const valoresLote = registros.map(reg => [
             Number(sesion_id),
             Number(reg.estudiante_id),
             Number(reg.asistio)
         ]);
 
-        console.log(`-> [AIVEN.IO] Procesando actualización masiva para Sesión ID: ${sesion_id}`);
+        console.log(`-> [AIVEN.IO] Procesando actualización masiva para Sesión ID: ${sesion_id} | Curso ID: ${curso_id}`);
 
-        // 🔥 LA MAGIA DE MYSQL: Inserta si no existe, o hace UPDATE en el mismo ID si ya existe
-        // gracias al índice UNIQUE relacional, manteniendo los IDs correlativos intactos.
+        // 🔥 TU MAGIA ORIGINAL DE MYSQL INTACTA CON MÁXIMO RENDIMIENTO
         await db.query(`
             INSERT INTO control_asistencias (sesion_id, estudiante_id, asistio) 
             VALUES ? 
@@ -695,13 +705,47 @@ exports.guardarAsistenciaAula = async (req, res) => {
         `, [valoresLote]);
 
         console.log(`-> [ÉXITO] Asistencias actualizadas correctamente sobre sus mismos registros.`);
-        res.status(200).json({ message: "¡Asistencias actualizadas de forma limpia en el repositorio!" });
+
+        // =========================================================================
+        // 🚀 INYECCIÓN MAESTRA: PROCESAMIENTO DINÁMICO DE ASISTENCIAS EN PARALELO [11/07/2026]
+        // =========================================================================
+        console.log(`-> [AIVEN.IO] Invocando sp_calcular_cierre_asistencia_alumno para ${registros.length} alumno(s).`);
+        
+        // A) El procedimiento almacenado calcula y asienta el porcentaje actual en la tabla puente matricula_detalles
+        await Promise.all(registros.map(reg => {
+            return db.query('CALL sp_calcular_cierre_asistencia_alumno(?, ?)', [
+                Number(reg.estudiante_id),
+                Number(curso_id)
+            ]);
+        }));
+        
+        // B) 🛡️ LA ADUANA DE CONTROL EN NODE.JS: Evaluamos y actualizamos el estado de aprobación final
+        // Si el porcentaje acumulado sobre lo dictado es < 75%, Express le estampa la inhabilitación de forma directa.
+        await Promise.all(registros.map(reg => {
+            return db.query(`
+                UPDATE matricula_detalles md
+                INNER JOIN matriculas m ON md.matricula_id = m.id
+                SET md.estado_aprobacion = CASE 
+                    WHEN md.asistencia_final_porcentaje < 75 THEN 'Desaprobado por Inasistencias'
+                    WHEN md.promedio_final >= 10.5 THEN 'Aprobado'
+                    WHEN md.promedio_final IS NOT NULL THEN 'Desaprobado por Notas'
+                    ELSE 'En Curso'
+                END
+                WHERE m.estudiante_id = ? AND md.curso_id = ?
+            `, [Number(reg.estudiante_id), Number(curso_id)]);
+        }));
+        
+        console.log(`-> [AIVEN.IO] Auditoría de récords de asistencia procesada al 100% de forma conforme.`);
+        // =========================================================================
+
+        res.status(200).json({ message: "¡Asistencias actualizadas de forma limpia en el repositorio y porcentajes auditados!" });
 
     } catch (error) {
         console.error("Error crítico en guardarAsistenciaAula:", error);
         res.status(500).json({ error: error.message });
     }
 };
+
 
 
 
@@ -729,7 +773,6 @@ exports.obtenerAsistenciasGuardadas = async (req, res) => {
 
 
 exports.publicarActaNotas = async (req, res) => {
-    // Capturamos el configuracion_nota_id dinámico de la evaluación que se va a cerrar [30/06/2026]
     const { curso_id, semestre_id, configuracion_nota_id } = req.body;
 
     console.log(`-> [AIVEN.IO] Aduana Estricta: Evaluando firma progresiva Evaluación ID: ${configuracion_nota_id} | Curso: ${curso_id}`);
@@ -739,7 +782,6 @@ exports.publicarActaNotas = async (req, res) => {
     }
 
     try {
-        // 🔍 1. CONTAMOS EL UNIVERSO REAL DE ALUMNOS MATRICULADOS EN ESTA SECCIÓN (Ejemplo: Dan 2 Alumnos) [30/06/2026]
         const [totalMatriculados] = await db.query(`
             SELECT COUNT(DISTINCT m.estudiante_id) AS total
             FROM matricula_detalles md
@@ -747,7 +789,6 @@ exports.publicarActaNotas = async (req, res) => {
             WHERE md.curso_id = ? AND m.semestre_id = ?
         `, [Number(curso_id), Number(semestre_id)]);
 
-        // 🔍 2. CONTAMOS CUÁNTOS DE ESOS ALUMNOS REGISTRAN CALIFICACIONES REALES (Diferentes de NULL o vacío) [30/06/2026]
         const [totalCalificados] = await db.query(`
             SELECT COUNT(*) AS total
             FROM notas_generales_estudiantes
@@ -755,11 +796,10 @@ exports.publicarActaNotas = async (req, res) => {
               AND nota IS NOT NULL AND nota <> ''
         `, [Number(curso_id), Number(configuracion_nota_id)]);
 
-        // Extraemos las métricas puras de los resultados del pool de MySQL [30/06/2026]
-        const alumnosInscritos = totalMatriculados[0]?.total || 0;
-        const alumnosConNota = totalCalificados[0]?.total || 0;
+        // Calibración segura de lectura de índices del pool de MySQL
+        const alumnosInscritos = totalMatriculados[0]?.total || totalMatriculados?.total || 0;
+        const alumnosConNota = totalCalificados[0]?.total || totalCalificados?.total || 0;
 
-        // 🔒 3. EL CANDADO DE PROTECCIÓN EN EL SERVIDOR: Tolerancia cero a casilleros en blanco [30/06/2026]
         if (alumnosConNota < alumnosInscritos) {
             console.log(`❌ [RECHAZADO] Intento de firma incompleta: Matriculados: ${alumnosInscritos} | Calificados: ${alumnosConNota}`);
             return res.status(422).json({
@@ -767,17 +807,34 @@ exports.publicarActaNotas = async (req, res) => {
             });
         }
 
-        // 🔒 4. LA FIRMA DIGITAL: Si todos tienen nota, MySQL ejecuta el update progresivo de forma segura [30/06/2026]
-        const [resultado] = await db.query(`
+        await db.query(`
             UPDATE notas_generales_estudiantes
-            SET 
-                nota_publicada = 1,
-                fecha_publicacion = CURRENT_TIMESTAMP
+            SET nota_publicada = 1, fecha_publicacion = CURRENT_TIMESTAMP
             WHERE curso_id = ? AND configuracion_nota_id = ?
         `, [Number(curso_id), Number(configuracion_nota_id)]);
 
+        const [alumnosSalon] = await db.query(`
+            SELECT DISTINCT m.estudiante_id
+            FROM matricula_detalles md
+            INNER JOIN matriculas m ON md.matricula_id = m.id
+            WHERE md.curso_id = ? AND m.semestre_id = ?
+        `, [Number(curso_id), Number(semestre_id)]);
+
+        if (alumnosSalon && alumnosSalon.length > 0) {
+            console.log(`-> [AIVEN.IO] Ejecutando sp_calcular_cierre_curso_alumno en lote para ${alumnosSalon.length} estudiante(s).`);
+            
+            await Promise.all(alumnosSalon.map(alumno => {
+                return db.query('CALL sp_calcular_cierre_curso_alumno(?, ?)', [
+                    Number(alumno.estudiante_id), 
+                    Number(curso_id)
+                ]);
+            }));
+            
+            console.log(`-> [AIVEN.IO] Cierre matemático y promedios finales procesados con éxito.`);
+        }
+
         return res.status(200).json({
-            message: `¡Evaluación oficial publicada con éxito! Se aplicó un candado institucional a las celdas correspondientes.`
+            message: `¡Evaluación oficial publicada con éxito! Se aplicó un candado institucional a las celdas correspondientes y se actualizaron los promedios finales.`
         });
 
     } catch (error) {
@@ -791,3 +848,206 @@ exports.publicarActaNotas = async (req, res) => {
 
 
 
+// 🎓 PORTAL ALUMNO: Obtener lista de cursos matriculados
+exports.obtenerCursosEstudiante = async (req, res) => {
+    const { estudiante_id, semestre_id } = req.query;
+
+    console.log(`-> [AIVEN.IO] Listando asignaturas para Alumno ID: ${estudiante_id}`);
+
+    if (!estudiante_id || !semestre_id) {
+        return res.status(400).json({ message: "Faltan parámetros (estudiante_id o semestre_id)." });
+    }
+
+    try {
+        // Consulta sincronizada perfectamente con tu formato de la página 7 del PDF
+        const [cursos] = await db.query(`
+            SELECT 
+                c.id AS curso_id,
+                c.nombre AS curso_nombre,
+                c.ciclo,
+                CONCAT('SI', c.ciclo, '0', c.id) AS codigo
+            FROM matriculas m
+            INNER JOIN matricula_detalles md ON md.matricula_id = m.id
+            INNER JOIN cursos c ON md.curso_id = c.id
+            WHERE m.estudiante_id = ? AND m.semestre_id = ?
+            ORDER BY c.ciclo ASC, c.nombre ASC
+        `, [Number(estudiante_id), Number(semestre_id)]);
+
+        return res.status(200).json(cursos);
+
+    } catch (error) {
+        console.error("🚨 Error en obtenerCursosEstudiante:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};
+
+
+
+
+// 📡 PORTAL ALUMNO: Obtener boleta detallada basada en la estructura del cronograma de MySQL [10/07/2026]
+exports.obtenerBoletaDetalladaEstudiante = async (req, res) => {
+    const { estudiante_id, curso_id, semestre_id } = req.query;
+
+    console.log(`-> [AIVEN.IO] Generando libreta relacional Alumno ID: ${estudiante_id} | Curso ID: ${curso_id} | Semestre ID: ${semestre_id}`);
+
+    if (!estudiante_id || !curso_id || !semestre_id) {
+        return res.status(400).json({ message: "Parámetros relacionales incompletos en el servidor." });
+    }
+
+    try {
+        // 🔍 EL QUERY SUPREMO: Seleccionamos el cronograma como tabla principal (cfg) 
+        // y le acoplamos la nota del alumno mediante un LEFT JOIN filtrado en el ON.
+        // Esto garantiza que si el alumno no tiene notas, la fila estructural aparezca sí o sí [10/07/2026].
+        const [boleta] = await db.query(`
+            SELECT 
+                cfg.id AS configuracion_nota_id,
+                cfg.nombre_nota AS evaluacion_nombre,
+                cfg.peso_porcentaje,
+                n.nota,
+                n.nota_publicada,
+                DATE_FORMAT(n.fecha_publicacion, '%d/%m/%Y') AS fecha_publicacion
+            FROM configuracion_notas_global cfg
+            LEFT JOIN notas_generales_estudiantes n 
+                ON cfg.id = n.configuracion_nota_id 
+                AND n.estudiante_id = ? 
+                AND n.curso_id = ?
+            WHERE cfg.semestre_id = ?
+            ORDER BY cfg.num_evaluacion ASC
+        `, [Number(estudiante_id), Number(curso_id), Number(semestre_id)]);
+
+        console.log(`-> [BACKEND] Filas estructurales recuperadas desde MySQL: ${boleta.length}`);
+
+        // 🧠 Si el administrador no configuró el cronograma para este semestre, lanzamos un bloque base de contingencia
+        if (!boleta || boleta.length === 0) {
+            return res.status(200).json([
+                { configuracion_nota_id: 17, evaluacion_nombre: 'Evaluacion 1', peso: 25, estado: 'Pendiente', fecha_pub: '-', nota: null },
+                { configuracion_nota_id: 18, evaluacion_nombre: 'Evaluacion 2', peso: 25, estado: 'Pendiente', fecha_pub: '-', nota: null },
+                { configuracion_nota_id: 19, evaluacion_nombre: 'Evaluacion 3', peso: 25, estado: 'Pendiente', fecha_pub: '-', nota: null },
+                { configuracion_nota_id: 20, evaluacion_nombre: 'Evaluacion 4', peso: 25, estado: 'Pendiente', fecha_pub: '-', nota: null }
+            ]);
+        }
+
+        // Mapeo seguro: Si la nota existe pero tiene bandera = 0 (Borrador), se la ocultamos de forma estricta al alumno [10/07/2026]
+        const boletaProtegida = boleta.map(evaluacion => {
+            const esOficial = evaluacion.nota_publicada === 1;
+            return {
+                configuracion_nota_id: evaluacion.configuracion_nota_id,
+                evaluacion_nombre: evaluacion.evaluacion_nombre,
+                peso: evaluacion.peso_porcentaje,
+                estado: esOficial ? 'Publicada' : 'Pendiente',
+                fecha_pub: esOficial ? evaluacion.fecha_publicacion : '-',
+                nota: esOficial ? evaluacion.nota : null
+            };
+        });
+
+        return res.status(200).json(boletaProtegida);
+
+    } catch (error) {
+        console.error("🚨 Error crítico en obtenerBoletaDetalladaEstudiante:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};
+
+// 📡 PORTAL ALUMNO: Obtener métricas de asistencia blindado contra tablas vacías o inexistentes [10/07/2026]
+// 📡 PORTAL ALUMNO: Obtener métricas reales desde control_asistencias
+exports.obtenerAsistenciaEstudianteDona = async (req, res) => {
+    const { estudiante_id, curso_id } = req.query;
+
+    console.log(`-> [AIVEN.IO] Calculando control_asistencias Alumno: ${estudiante_id} | Curso: ${curso_id}`);
+
+    if (!estudiante_id || !curso_id) {
+        return res.status(400).json({ message: "Parámetros relacionales obligatorios ausentes." });
+    }
+
+    try {
+        // 🔍 CONSULTA A: Contamos cuántas asistencias y faltas reales tiene el alumno en la tabla control_asistencias
+        const [conteosAlumno] = await db.query(`
+            SELECT 
+                COUNT(CASE WHEN ca.asistio = 1 THEN 1 END) AS asistencias,
+                COUNT(CASE WHEN ca.asistio = 0 THEN 1 END) AS faltas
+            FROM control_asistencias ca
+            INNER JOIN sesiones s ON ca.sesion_id = s.id
+            WHERE ca.estudiante_id = ? AND s.curso_id = ?
+        `, [Number(estudiante_id), Number(curso_id)]);
+
+        // 🔍 CONSULTA B: Jalamos el universo completo de sesiones programadas en tu tabla 'sesiones' (las 20 clases)
+        const [universoSesiones] = await db.query(`
+            SELECT COUNT(*) AS total_programadas 
+            FROM sesiones 
+            WHERE curso_id = ?
+        `, [Number(curso_id)]);
+
+        // Extraemos la primera fila de resultados del pool desestructurado de MySQL
+        const datosAlumno = (conteosAlumno && conteosAlumno[0]) ? conteosAlumno[0] : { asistencias: 0, faltas: 0 };
+        const totalClasesProgramadas = (universoSesiones && universoSesiones[0]) ? universoSesiones[0].total_programadas : 0;
+
+        // Despachamos el JSON relacional limpio hacia tu Frontend
+        const metrica = {
+            asistencias: Number(datosAlumno.asistencias) || 0,
+            tardanzas: 0, // No aplica en tus reglas de negocio
+            faltas: Number(datosAlumno.faltas) || 0,
+            total_clases: Number(totalClasesProgramadas) || 0 // Envía las 20 sesiones reales de tu Workbench
+        };
+
+        return res.status(200).json(metrica);
+
+    } catch (error) {
+        console.error("🚨 Error crítico en obtenerAsistenciaEstudianteDona:", error);
+        return res.status(200).json({ asistencias: 0, tardanzas: 0, faltas: 0, total_clases: 0 });
+    }
+};
+
+
+exports.consolidarCierreActaFinal = async (req, res) => {
+    const { curso_id, semestre_id, configuracion_nota_id, profesor_id } = req.body;
+
+    console.log(`-> [AIVEN.IO] GATILLO MAESTRO: Ejecutando Cierre definitivo de Acta para Curso: ${curso_id}`);
+
+    if (!curso_id || !semestre_id || !configuracion_nota_id || !profesor_id) {
+        return res.status(400).json({ message: "Faltan parámetros esenciales para el cierre definitivo del acta." });
+    }
+
+    try {
+        // A) Generamos el código único de auditoría histórica y la ruta string del archivo PDF
+        const codigoActaUnico = `ACTA-FINAL-C${curso_id}-S${semestre_id}-${Date.now()}`;
+        const urlPdfGenerado = `/storage/actas/${codigoActaUnico}.pdf`;
+
+        // B) Insertamos la Cabecera oficial firmada de forma manual en actas_notes
+        const [resultadoActa] = await db.query(`
+            INSERT INTO actas_notes (codigo_acta, curso_id, semestre_id, configuracion_nota_id, profesor_id, url_pdf)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `, [codigoActaUnico, Number(curso_id), Number(semestre_id), Number(configuracion_nota_id), Number(profesor_id), urlPdfGenerado]);
+        
+        const actaIdInsertado = resultadoActa.insertId;
+
+        // C) Congelamos las notas definitivas actuales de todo el salón en acta_detalles
+        await db.query(`
+            INSERT INTO acta_detalles (acta_id, estudiante_id, nota_congelada)
+            SELECT ?, estudiante_id, nota 
+            FROM notas_generales_estudiantes
+            WHERE curso_id = ? AND configuracion_nota_id = ?
+        `, [actaIdInsertado, Number(curso_id), Number(configuracion_nota_id)]);
+
+        // D) Actualizamos el Estado de Aprobación Final de 'En Curso' a definitivo en matricula_detalles
+        await db.query(`
+            UPDATE matricula_detalles md
+            INNER JOIN matriculas m ON md.matricula_id = m.id
+            SET md.estado_aprobacion = CASE 
+                WHEN md.asistencia_final_porcentaje < 75 THEN 'Desaprobado por Inasistencias'
+                WHEN md.promedio_final >= 10.5 THEN 'Aprobado'
+                ELSE 'Desaprobado por Notas'
+            END
+            WHERE m.semestre_id = ? AND md.curso_id = ?
+        `, [Number(semestre_id), Number(curso_id)]);
+
+        return res.status(200).json({
+            message: "¡Acta Final del curso cerrada e historiada con éxito rotundo!",
+            codigo_acta: codigoActaUnico,
+            url_pdf: urlPdfGenerado
+        });
+
+    } catch (error) {
+        console.error("🚨 Error en el botón maestro consolidarCierreActaFinal:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};

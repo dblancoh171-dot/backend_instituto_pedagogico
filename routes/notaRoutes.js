@@ -59,6 +59,14 @@ router.get('/obtener-asistencias-guardadas', notaController.obtenerAsistenciasGu
 
 router.post('/publicar-acta', notaController.publicarActaNotas);
 
+router.get('/mis-calificaciones-alumno', notaController.obtenerCursosEstudiante);
+
+router.get('/boleta-detallada-alumno', notaController.obtenerBoletaDetalladaEstudiante);
+
+router.get('/asistencia-dona-alumno', notaController.obtenerAsistenciaEstudianteDona);
+
+router.post('/cerrar-acta-final', notaController.consolidarCierreActaFinal);
+
 
 
 
