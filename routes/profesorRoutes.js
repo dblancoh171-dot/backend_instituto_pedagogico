@@ -69,5 +69,9 @@ router.get('/perfil-completo', profesorController.obtenerPerfilCompletoDocente);
 router.post('/upload-avatar', upload.single('foto'), profesorController.actualizarFotoPerfilDocente); // Guarda y Edita
 router.post('/delete-avatar', profesorController.eliminarFotoPerfilDocente); // Elimina
 
+
+// 🚀 ENDPOINT EXCLUSIVO PARA LA PESTAÑA "MIS ALUMNOS"
+router.get('/mis-alumnos-vanguardia', profesorController.obtenerMisAlumnosDetalle);
+
 module.exports = router;
 

@@ -8,6 +8,7 @@ const estudianteRoutes = require('./routes/estudianteRoutes');
 const cursoRoutes = require('./routes/cursoRoutes');
 const entregaRoutes = require('./routes/entregaRoutes');
 const profesorRoutes = require('./routes/profesorRoutes');
+const horarioRoutes = require('./routes/horarioRoutes'); 
 
 
 dotenv.config();
@@ -31,6 +32,8 @@ app.use('/api/entregas', entregaRoutes);
 app.use('/uploads/entregas', express.static(path.join(__dirname, 'uploads/entregas')));
 
 app.use('/api/profesores', profesorRoutes);
+
+app.use('/api/horarios', horarioRoutes); 
 
 // Ruta de prueba local
 app.get('/', (req, res) => {

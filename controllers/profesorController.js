@@ -354,3 +354,47 @@ exports.eliminarExperienciaLaboral = async (req, res) => {
         return res.status(500).json({ error: error.message });
     }
 };
+
+
+// 👥 ENDPOINT: OBTENER ALUMNOS ASIGNADOS A LA CARGA ACADÉMICA DEL DOCENTE
+exports.obtenerMisAlumnosDetalle = async (req, res) => {
+    const { profesor_id, semestre_id } = req.query;
+
+    console.log(`-> [AIVEN.IO] Generando Directorio Clinico de Alumnos para Profesor: ${profesor_id} | Semestre: ${semestre_id}`);
+
+    if (!profesor_id || !semestre_id) {
+        return res.status(400).json({ message: "Los parametros profesor_id y semestre_id son estrictamente requeridos." });
+    }
+
+    try {
+        // Ejecutamos un query unificado cruzando tu arbol de la captura de pantalla
+        const [rows] = await db.query(`
+            SELECT DISTINCT
+                e.id AS estudiante_id,
+                u.nombres,
+                u.apellidos,
+                u.dni,
+                u.email,
+                c.id AS curso_id,
+                c.nombre AS curso_nombre,
+                c.ciclo AS curso_ciclo,
+                md.promedio_final,
+                md.asistencia_final_porcentaje,
+                md.estado_aprobacion
+            FROM matricula_detalles md
+            INNER JOIN matriculas m ON md.matricula_id = m.id
+            INNER JOIN estudiantes e ON m.estudiante_id = e.id
+            INNER JOIN usuarios u ON e.usuario_id = u.id
+            INNER JOIN cursos c ON md.curso_id = c.id
+            INNER JOIN carga_academica ca ON c.id = ca.curso_id
+            WHERE ca.profesor_id = ? AND m.semestre_id = ?
+            ORDER BY c.nombre ASC, u.apellidos ASC, u.nombres ASC
+        `, [Number(profesor_id), Number(semestre_id)]);
+
+        return res.status(200).json(rows);
+
+    } catch (error) {
+        console.error("🚨 Error critico en obtenerMisAlumnosDetalle:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};
