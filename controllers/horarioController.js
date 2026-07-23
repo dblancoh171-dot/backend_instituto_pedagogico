@@ -17,16 +17,17 @@ exports.obtenerHorarioProfesor = async (req, res) => {
                 c.nombre AS curso_nombre,
                 c.ciclo AS curso_ciclo,
                 h.dia_semana,
-                h.hora_inicio,
-                h.hora_fin,
+                b.hora_inicio,
+                b.hora_fin,
                 h.aula
             FROM horarios h
             INNER JOIN carga_academica ca ON h.carga_academica_id = ca.id
             INNER JOIN cursos c ON ca.curso_id = c.id
+			INNER JOIN bloques_horarios b ON h.bloque_id = b.id
             WHERE ca.profesor_id = ? AND ca.semestre_id = ?
             ORDER BY 
                 FIELD(LOWER(h.dia_semana), 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'), 
-                h.hora_inicio ASC
+                b.hora_inicio ASC
         `, [Number(profesor_id), Number(semestre_id)]);
 
         return res.status(200).json(rows);

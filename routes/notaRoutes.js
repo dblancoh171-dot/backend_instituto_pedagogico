@@ -26,6 +26,50 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 
+
+const storageActas = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const dir = './uploads/actas';
+        // Creamos la subcarpeta de forma automática si aún no existe en el disco
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true }); 
+        }
+        cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+        // Le asignamos un nombre formal institucional basado en el timestamp y el nombre original
+        cb(null, `ACTA-FIRMA-${Date.now()}${path.extname(file.originalname)}`);
+    }
+});
+
+
+
+// 🔒 NUEVO FILTRO DE SEGURIDAD: Valida de forma estricta que sea SÓLO PDF
+const pdfFileFilter = (req, file, cb) => {
+    // Expresión regular para buscar la extensión pdf
+    const filetypes = /pdf/;
+    
+    // 1. Validamos la extensión del archivo original (.pdf)
+    const extensionValida = filetypes.test(path.extname(file.originalname).toLowerCase());
+    
+    // 2. Validamos el tipo MIME real que envía el archivo (application/pdf)
+    const mimeTypeValido = filetypes.test(file.mimetype);
+
+    if (extensionValida && mimeTypeValido) {
+        return cb(null, true); // Cumple las dos condiciones, permite la subida
+    } else {
+        // Dispara un error inmediato controlable en tu bloque try/catch
+        return cb(new Error('Formato no permitido. El documento debe ser estrictamente un archivo en formato PDF.'), false);
+    }
+};
+
+// Instanciamos tu middleware inyectándole el validador estricto de seguridad
+const uploadActas = multer({ 
+    storage: storageActas,
+    fileFilter: pdfFileFilter, // 🎯 Activamos el filtro de extensión
+    limits: { fileSize: 10 * 1024 * 1024 } // Opcional: Límite de 10MB por acta por seguridad
+});
+
 // Definición de endpoints para el docente
 router.get('/alumnos-curso', notaController.obtenerAlumnosPorCurso);
 router.post('/registrar', notaController.registrarNota);
@@ -67,8 +111,16 @@ router.get('/asistencia-dona-alumno', notaController.obtenerAsistenciaEstudiante
 
 router.post('/cerrar-acta-final', notaController.consolidarCierreActaFinal);
 
+router.get('/actas-consolidadas', notaController.obtenerActasConsolidadas);
 
+// 📄 EN ROUTES/NOTAROUTES.JS: Enlace directo al motor de renderizado PDFKit
+router.get('/acta-pdf', notaController.generarPdfActaOficial);
 
+router.put(
+    '/actas-consolidadas/:id/documento', 
+    uploadActas.single('documento_acta'), // ◄ ¡Usa el cargador dedicado de actas!
+    notaController.actualizarDocumentoActa
+);
 
 module.exports = router;
 

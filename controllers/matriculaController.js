@@ -143,6 +143,7 @@ exports.obtenerCursosMatriculadosEstudiante = async (req, res) => {
                 c.id AS curso_id,
                 c.nombre AS curso_nombre,
                 c.ciclo,
+                c.codigo AS curso_codigo,
                 CONCAT('SI', c.ciclo, '0', c.id) AS codigo_curso,
                 3 AS creditos,
                 IFNULL(CONCAT(u.nombres, ' ', u.apellidos), 'Por Asignar') AS docente_nombre,

@@ -1,6 +1,11 @@
 const db = require('../config/db');
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
+const path = require('path');
+
 
 // 1. 🔥 NUEVO: Función obligatoria para traer la lista de alumnos inscritos en el curso
+// 📌 REEMPLAZO EXACTO DESDE LA PÁGINA 1 HASTA LA PÁGINA 4 DE TU CONTROLLER
 exports.obtenerAlumnosPorCurso = async (req, res) => {
     const curso_id = req.query.curso_id;
     const semestre_id = req.query.semestre_id;
@@ -12,16 +17,36 @@ exports.obtenerAlumnosPorCurso = async (req, res) => {
     try {
         console.log(`-> [AIVEN.IO] Extrayendo cronograma dinámico para Semestre: ${semestre_id} | Curso: ${curso_id}`);
 
-        // 🚀 CONSULTA 1: Traemos de forma real las evaluaciones parametrizadas por el administrador para este periodo
+        // 🔒 LA REGLA DE ORO DE LA VERDAD: Validamos directamente en MySQL si esta acta ya se cerró
+        const [actaVerificacion] = await db.query(
+            "SELECT id FROM actas_notes WHERE curso_id = ? AND semestre_id = ?",
+            [Number(curso_id), Number(semestre_id)]
+        );
+        const estaActaCerradaBD = actaVerificacion.length > 0; // Devuelve true si encuentra filas, false si está vacía
+
+        // 🚀 CONSULTA 1: Traemos las evaluaciones parametrizadas
         const [configuracion] = await db.query(
-            "SELECT id, nombre_nota, peso_porcentaje, fecha_inicio_ingreso, fecha_fin_ingreso  FROM configuracion_notas_global WHERE semestre_id = ? ORDER BY num_evaluacion ASC",
+            "SELECT id, nombre_nota, peso_porcentaje, fecha_inicio_ingreso, fecha_fin_ingreso FROM configuracion_notas_global WHERE semestre_id = ? ORDER BY num_evaluacion ASC",
             [Number(semestre_id)]
         );
 
-        // 🚀 CONSULTA 2: Jalamos los datos base de los estudiantes matriculados en esta sección
+        // 👨‍🏫 CONSULTA DE IDENTIDAD: Jalamos el nombre del profesor asignado a este curso
+        const [profesorInfo] = await db.query(`
+        SELECT CONCAT(u.nombres, ' ', u.apellidos) AS nombre_completo
+        FROM carga_academica ca
+        INNER JOIN profesores p ON ca.profesor_id = p.id
+        INNER JOIN usuarios u ON p.usuario_id = u.id
+        WHERE ca.curso_id = ? AND ca.semestre_id = ?
+        LIMIT 1
+    `, [Number(curso_id), Number(semestre_id)]);
+
+        const nombreProfesorBD = profesorInfo.length > 0 ? profesorInfo[0].nombre_completo : 'Docente por Asignar';
+
+        // 🚀 CONSULTA 2: Jalamos los datos base de los estudiantes matriculados
         const [alumnos] = await db.query(
             `SELECT DISTINCT 
                 e.id AS estudiante_id, 
+                e.codigo_estudiante, 
                 u.nombres, 
                 u.apellidos, 
                 u.dni
@@ -34,34 +59,31 @@ exports.obtenerAlumnosPorCurso = async (req, res) => {
             [Number(curso_id), Number(semestre_id)]
         );
 
-        // 🚀 CONSULTA 3: Si hay alumnos y configuraciones vigentes, jalamos el universo de notas existente
+        // 🚀 CONSULTA 3: Jalamos el universo de notas existente
         let calificacionesExistentes = [];
         if (alumnos.length > 0 && configuracion.length > 0) {
             const idsEstudiantes = alumnos.map(a => a.estudiante_id);
             const idsConfiguracion = configuracion.map(c => c.id);
 
-            // 🔥 REPARACIÓN MAESTRA: Quitamos 'AND semestre_id = ?' y removemos su argumento del arreglo [01/07/2026]
             const [notas] = await db.query(
                 `SELECT estudiante_id, configuracion_nota_id, nota, nota_publicada 
-         FROM notas_generales_estudiantes 
-         WHERE curso_id = ? 
-         AND estudiante_id IN (?) AND configuracion_nota_id IN (?)`,
+                 FROM notas_generales_estudiantes 
+                 WHERE curso_id = ? 
+                 AND estudiante_id IN (?) AND configuracion_nota_id IN (?)`,
                 [Number(curso_id), idsEstudiantes, idsConfiguracion]
             );
             calificacionesExistentes = notas;
         }
 
-        // 🧠 MAPEO EN MEMORIA: Estructuramos el JSON dinámicamente acoplando las celdas encontradas
+        // 🧠 MAPEO EN MEMORIA: Acoplamos los datos para enviarlos estructurados a React
         const listaAlumnosProcesados = alumnos.map(alumno => {
             const mapaNotasEstudiante = {};
             const mapaPublicadosEstudiante = {};
 
-            // Recorremos las columnas reales encontradas en la BD y buscamos si este alumno tiene nota ahí
             configuracion.forEach(col => {
                 const registroNota = calificacionesExistentes.find(n =>
                     n.estudiante_id === alumno.estudiante_id && n.configuracion_nota_id === col.id
                 );
-                // Si existe el registro se inyecta su valor real, si no, se manda nulo para dejar la caja limpia
                 mapaNotasEstudiante[col.id] = registroNota ? registroNota.nota : null;
                 mapaPublicadosEstudiante[col.id] = registroNota ? registroNota.nota_publicada : 0;
             });
@@ -69,6 +91,9 @@ exports.obtenerAlumnosPorCurso = async (req, res) => {
             return {
                 id: alumno.estudiante_id,
                 estudiante_id: alumno.estudiante_id,
+                codigo_estudiante: alumno.codigo_estudiante,
+                nombres: alumno.nombres,
+                apellidos: alumno.apellidos,
                 apellidos_nombres: `${alumno.apellidos} ${alumno.nombres}`,
                 dni: alumno.dni,
                 notas: mapaNotasEstudiante,
@@ -76,10 +101,12 @@ exports.obtenerAlumnosPorCurso = async (req, res) => {
             };
         });
 
-        // Retornamos el paquete integral de datos reales rumbo a React
+        // 🚀 RETORNO INTEGRAL AL FRONTEND: Inyectamos la variable real de la base de datos
         return res.status(200).json({
             alumnos: listaAlumnosProcesados,
-            configuracionNotas: configuracion
+            configuracionNotas: configuracion,
+            profesorNombre: nombreProfesorBD,
+            actaCerrada: estaActaCerradaBD // ◄ ¡Garantiza que React sepa el estado real en frío!
         });
 
     } catch (error) {
@@ -87,6 +114,7 @@ exports.obtenerAlumnosPorCurso = async (req, res) => {
         return res.status(500).json({ error: error.message });
     }
 };
+
 
 
 // 2. Tu función de registro corregida y adaptada con la columna 'resultado'
@@ -182,8 +210,7 @@ exports.registrarNota = async (req, res) => {
                     (estudiante_id, curso_id, configuracion_nota_id, nota)
                 VALUES ?
                 ON DUPLICATE KEY UPDATE
-                    nota = VALUES(nota),
-                    fecha_registro = CURRENT_TIMESTAMP
+                    nota = VALUES(nota)
             `, [valoresLote]);
 
             return res.status(200).json({
@@ -222,8 +249,7 @@ exports.registrarNota = async (req, res) => {
                 (estudiante_id, curso_id, configuracion_nota_id, nota)
             VALUES (?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
-                nota = VALUES(nota),
-                fecha_registro = CURRENT_TIMESTAMP
+                nota = VALUES(nota)
         `, [Number(estudiante_id), Number(curso_id), Number(configuracion_nota_id), notaValidadaSql]);
 
         return res.status(200).json({ message: "Calificación unitaria registrada correctamente." });
@@ -247,35 +273,41 @@ exports.obtenerCursosPorDocente = async (req, res) => {
     }
 
     try {
+        // 🔥 QUERY REDISEÑADO: Integra bloques_horarios y extrae el aula real
         const [cursos] = await db.query(`
             SELECT 
                 c.id AS curso_id,
                 c.nombre AS curso_nombre,
                 c.ciclo,
-                CONCAT('SI', c.ciclo, '0', c.id) AS codigo,
+                c.codigo AS codigo, -- Usamos el código real único de la tabla cursos que limpiamos antes
                 IFNULL(
                     (
                         SELECT GROUP_CONCAT(
-                            CONCAT(UPPER(SUBSTRING(h.dia_semana, 1, 1)), SUBSTRING(h.dia_semana, 2), ' (', DATE_FORMAT(h.hora_inicio, '%H:%i'), '-', DATE_FORMAT(h.hora_fin, '%H:%i'), ')')
+                            CONCAT(
+                                UPPER(SUBSTRING(h.dia_semana, 1, 1)), SUBSTRING(h.dia_semana, 2), 
+                                ' (', DATE_FORMAT(bh.hora_inicio, '%H:%i'), '-', DATE_FORMAT(bh.hora_fin, '%H:%i'), ') [', h.aula, ']'
+                            )
                             SEPARATOR ' / '
                         )
                         FROM horarios h
+                        INNER JOIN bloques_horarios bh ON h.bloque_id = bh.id
                         WHERE h.carga_academica_id = ca.id
                     ),
                     'Horario por Definir'
-                ) AS horario,
-                'Aula por Asignar' AS aula
+                ) AS horario
             FROM carga_academica ca
-            JOIN cursos c ON ca.curso_id = c.id
+            INNER JOIN cursos c ON ca.curso_id = c.id
             WHERE ca.profesor_id = ? AND ca.semestre_id = ?
             ORDER BY c.ciclo ASC, c.nombre ASC
-        `, [profesor_id, semestre_id]);
+        `, [Number(profesor_id), Number(semestre_id)]);
 
-        res.status(200).json(cursos);
+        return res.status(200).json(cursos);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error("🚨 Error critico SQL en obtenerCursosPorDocente:", error);
+        return res.status(500).json({ error: error.message });
     }
 };
+
 
 
 
@@ -302,28 +334,31 @@ exports.obtenerCursosPorDocente = async (req, res) => {
                 c.id AS curso_id,
                 c.nombre AS curso_nombre,
                 c.ciclo,
-                CONCAT('SI', c.ciclo, '0', c.id) AS codigo,
+                c.codigo AS codigo, -- 🔥 CORREGIDO: Usamos la columna unificada oficial
                 
-                -- JALAMOS EL HORARIO FORMATEADO DE TU TABLA horarios
+                -- JALAMOS EL HORARIO FORMATEADO DE TU NUEVA TABLA MAESTRA DEL TIEMPO
                 IFNULL(
                     (
                         SELECT GROUP_CONCAT(
-                            CONCAT(UPPER(SUBSTRING(h.dia_semana, 1, 1)), SUBSTRING(h.dia_semana, 2), ' (', DATE_FORMAT(h.hora_inicio, '%H:%i'), '-', DATE_FORMAT(h.hora_fin, '%H:%i'), ')')
+                            CONCAT(
+                                UPPER(SUBSTRING(h.dia_semana, 1, 1)), SUBSTRING(h.dia_semana, 2), 
+                                ' (', DATE_FORMAT(bh.hora_inicio, '%H:%i'), '-', DATE_FORMAT(bh.hora_fin, '%H:%i'), ') [', h.aula, ']'
+                            )
                             SEPARATOR ' / '
                         )
                         FROM horarios h
+                        INNER JOIN bloques_horarios bh ON h.bloque_id = bh.id -- 🔥 CORREGIDO: Enlace a bloques
                         WHERE h.carga_academica_id = ca.id
                     ),
                     'Horario por Definir'
                 ) AS horario,
-                'Aula por Asignar' AS aula,
 
-                -- ALERTA INTERACTIVA 1: Verifica de forma real si dicta hoy, mañana o en otra fecha
+                -- ALERTA INTERACTIVA 1 CORREGIDA: Blindado contra mayúsculas/minúsculas usando LOWER()
                 IFNULL(
                     (
                         SELECT CASE 
-                            WHEN SUM(CASE WHEN h2.dia_semana = ? THEN 1 ELSE 0 END) > 0 THEN 'Próxima Clase: Hoy'
-                            WHEN SUM(CASE WHEN h2.dia_semana = ? THEN 1 ELSE 0 END) > 0 THEN 'Próxima Clase: Mañana'
+                            WHEN SUM(CASE WHEN LOWER(h2.dia_semana) = LOWER(?) THEN 1 ELSE 0 END) > 0 THEN 'Próxima Clase: Hoy'
+                            WHEN SUM(CASE WHEN LOWER(h2.dia_semana) = LOWER(?) THEN 1 ELSE 0 END) > 0 THEN 'Próxima Clase: Mañana'
                             ELSE 'Sin clases próximas'
                         END
                         FROM horarios h2
@@ -332,15 +367,13 @@ exports.obtenerCursosPorDocente = async (req, res) => {
                     'Sin clases próximas'
                 ) AS estatus_clase,
 
-                -- 🔥 ALERTA INTERACTIVA 2 CORREGIDA: Detecta alumnos que tengan casilleros vacíos de calificación
+                -- 🔥 ALERTA INTERACTIVA 2: Mantiene tu excelente lógica de casilleros de notas vacíos
                 (
                     SELECT COUNT(DISTINCT m.estudiante_id)
                     FROM matricula_detalles md
                     INNER JOIN matriculas m ON md.matricula_id = m.id
                     WHERE md.curso_id = c.id 
                       AND m.semestre_id = ca.semestre_id
-                      -- Un alumno entra al conteo si la cantidad de notas reales que tiene registradas 
-                      -- es menor al total de evaluaciones obligatorias que el admin configuró para este ciclo
                       AND (
                           SELECT COUNT(*) 
                           FROM notas_generales_estudiantes nge
@@ -353,17 +386,18 @@ exports.obtenerCursosPorDocente = async (req, res) => {
                 ) AS notas_pendientes_count
 
             FROM carga_academica ca
-            JOIN cursos c ON ca.curso_id = c.id
+            INNER JOIN cursos c ON ca.curso_id = c.id
             WHERE ca.profesor_id = ? AND ca.semestre_id = ?
             ORDER BY c.ciclo ASC, c.nombre ASC
         `, [diaHoy, diaManana, Number(profesor_id), Number(semestre_id)]);
 
-        res.status(200).json(cursos);
+        return res.status(200).json(cursos);
     } catch (error) {
         console.error("🚨 Error crítico en obtenerCursosPorDocente:", error);
-        res.status(500).json({ error: error.message });
+        return res.status(500).json({ error: error.message });
     }
 };
+
 
 
 
@@ -455,9 +489,6 @@ exports.obtenerMaterialesSesion = async (req, res) => {
     }
 };
 
-
-const fs = require('fs');
-const path = require('path');
 
 // 🔥 NUEVO: Eliminar material adjunto de la base de datos y del almacenamiento local
 exports.eliminarMaterialSesion = async (req, res) => {
@@ -710,7 +741,7 @@ exports.guardarAsistenciaAula = async (req, res) => {
         // 🚀 INYECCIÓN MAESTRA: PROCESAMIENTO DINÁMICO DE ASISTENCIAS EN PARALELO [11/07/2026]
         // =========================================================================
         console.log(`-> [AIVEN.IO] Invocando sp_calcular_cierre_asistencia_alumno para ${registros.length} alumno(s).`);
-        
+
         // A) El procedimiento almacenado calcula y asienta el porcentaje actual en la tabla puente matricula_detalles
         await Promise.all(registros.map(reg => {
             return db.query('CALL sp_calcular_cierre_asistencia_alumno(?, ?)', [
@@ -718,7 +749,7 @@ exports.guardarAsistenciaAula = async (req, res) => {
                 Number(curso_id)
             ]);
         }));
-        
+
         // B) 🛡️ LA ADUANA DE CONTROL EN NODE.JS: Evaluamos y actualizamos el estado de aprobación final
         // Si el porcentaje acumulado sobre lo dictado es < 75%, Express le estampa la inhabilitación de forma directa.
         await Promise.all(registros.map(reg => {
@@ -734,7 +765,7 @@ exports.guardarAsistenciaAula = async (req, res) => {
                 WHERE m.estudiante_id = ? AND md.curso_id = ?
             `, [Number(reg.estudiante_id), Number(curso_id)]);
         }));
-        
+
         console.log(`-> [AIVEN.IO] Auditoría de récords de asistencia procesada al 100% de forma conforme.`);
         // =========================================================================
 
@@ -807,11 +838,19 @@ exports.publicarActaNotas = async (req, res) => {
             });
         }
 
+        // 1. Generamos el string con el formato exacto de fecha y hora local de Perú (UTC-5)
+        const fechaPublicacionPeru = new Date().toLocaleString("sv-SE", { timeZone: "America/Lima" });
+        // Esto creará una cadena compatible: "2026-07-22 15:32:00"
+
+        console.log(`-> [BACKEND] Registrando fecha oficial de publicación en Perú: ${fechaPublicacionPeru}`);
+
+        // 2. Inyectamos la variable directamente como parámetro en tu consulta SQL
         await db.query(`
-            UPDATE notas_generales_estudiantes
-            SET nota_publicada = 1, fecha_publicacion = CURRENT_TIMESTAMP
-            WHERE curso_id = ? AND configuracion_nota_id = ?
-        `, [Number(curso_id), Number(configuracion_nota_id)]);
+    UPDATE notas_generales_estudiantes
+    SET nota_publicada = 1, 
+        fecha_publicacion = ?
+    WHERE curso_id = ? AND configuracion_nota_id = ?
+`, [fechaPublicacionPeru, Number(curso_id), Number(configuracion_nota_id)]);
 
         const [alumnosSalon] = await db.query(`
             SELECT DISTINCT m.estudiante_id
@@ -822,14 +861,14 @@ exports.publicarActaNotas = async (req, res) => {
 
         if (alumnosSalon && alumnosSalon.length > 0) {
             console.log(`-> [AIVEN.IO] Ejecutando sp_calcular_cierre_curso_alumno en lote para ${alumnosSalon.length} estudiante(s).`);
-            
+
             await Promise.all(alumnosSalon.map(alumno => {
                 return db.query('CALL sp_calcular_cierre_curso_alumno(?, ?)', [
-                    Number(alumno.estudiante_id), 
+                    Number(alumno.estudiante_id),
                     Number(curso_id)
                 ]);
             }));
-            
+
             console.log(`-> [AIVEN.IO] Cierre matemático y promedios finales procesados con éxito.`);
         }
 
@@ -864,6 +903,7 @@ exports.obtenerCursosEstudiante = async (req, res) => {
             SELECT 
                 c.id AS curso_id,
                 c.nombre AS curso_nombre,
+                c.codigo AS codigo_curso,
                 c.ciclo,
                 CONCAT('SI', c.ciclo, '0', c.id) AS codigo
             FROM matriculas m
@@ -1001,44 +1041,83 @@ exports.obtenerAsistenciaEstudianteDona = async (req, res) => {
 exports.consolidarCierreActaFinal = async (req, res) => {
     const { curso_id, semestre_id, configuracion_nota_id, profesor_id } = req.body;
 
-    console.log(`-> [AIVEN.IO] GATILLO MAESTRO: Ejecutando Cierre definitivo de Acta para Curso: ${curso_id}`);
+    console.log(`-> [AIVEN.IO] GATILLO MAESTRO: Evaluando Cierre definitivo de Acta para Curso: ${curso_id}`);
 
     if (!curso_id || !semestre_id || !configuracion_nota_id || !profesor_id) {
         return res.status(400).json({ message: "Faltan parámetros esenciales para el cierre definitivo del acta." });
     }
 
     try {
-        // A) Generamos el código único de auditoría histórica y la ruta string del archivo PDF
-        const codigoActaUnico = `ACTA-FINAL-C${curso_id}-S${semestre_id}-${Date.now()}`;
-        const urlPdfGenerado = `/storage/actas/${codigoActaUnico}.pdf`;
+        // 🔒 CANDADO PREVENTIVO DE BACKEND: Verificamos si ya existe un acta cerrada para este curso y periodo
+        const [actaExistente] = await db.query(`
+            SELECT codigo_acta, url_pdf 
+            FROM actas_notes 
+            WHERE curso_id = ? AND semestre_id = ?
+        `, [Number(curso_id), Number(semestre_id)]);
 
-        // B) Insertamos la Cabecera oficial firmada de forma manual en actas_notes
+        // 🛑 SI YA EXISTE, frena el proceso de inmediato y le devuelve al profesor los datos del acta ya generada
+        if (actaExistente.length > 0) {
+            console.log(`-> [AIVEN.IO] CONTROL: Bloqueando intento de re-cierre. El Acta ${actaExistente[0].codigo_acta} ya se encuentra sellada.`);
+            return res.status(409).json({
+                message: "⚠️ Operación bloqueada: El acta de calificaciones finales para este curso ya fue cerrada de forma definitiva y no puede ser modificada.",
+                codigo_acta: actaExistente[0].codigo_acta,
+                url_pdf: actaExistente[0].url_pdf,
+                ya_cerrada: true // Bandera útil para que el frontend bloquee los botones visualmente
+            });
+        }
+
+        // =========================================================================
+        // A) Si no existe, continúa el proceso normal que armamos antes...
+        // =========================================================================
+        const codigoActaUnico = `ACTA-FINAL-C${curso_id}-S${semestre_id}-${Date.now()}`;
+        const urlPdfGenerado = null;
+
+        // 🚀 CONVERSIÓN DE SEGURIDAD: Forzamos la hora de tu país en formato de texto plano
+        const fechaFirmaPeru = new Date().toLocaleString("sv-SE", { timeZone: "America/Lima" });
+
+        // B) Insertamos la Cabecera oficial
         const [resultadoActa] = await db.query(`
-            INSERT INTO actas_notes (codigo_acta, curso_id, semestre_id, configuracion_nota_id, profesor_id, url_pdf)
-            VALUES (?, ?, ?, ?, ?, ?)
-        `, [codigoActaUnico, Number(curso_id), Number(semestre_id), Number(configuracion_nota_id), Number(profesor_id), urlPdfGenerado]);
-        
+            INSERT INTO actas_notes (codigo_acta, curso_id, semestre_id, configuracion_nota_id, profesor_id, url_pdf, fecha_firma)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [codigoActaUnico, Number(curso_id), Number(semestre_id), Number(configuracion_nota_id), Number(profesor_id), urlPdfGenerado, fechaFirmaPeru]);
+
         const actaIdInsertado = resultadoActa.insertId;
 
-        // C) Congelamos las notas definitivas actuales de todo el salón en acta_detalles
+        // C) Congelamos las notas definitivas actuales de todo el salón (Con tu promedio ponderado variable)
         await db.query(`
             INSERT INTO acta_detalles (acta_id, estudiante_id, nota_congelada)
-            SELECT ?, estudiante_id, nota 
-            FROM notas_generales_estudiantes
-            WHERE curso_id = ? AND configuracion_nota_id = ?
-        `, [actaIdInsertado, Number(curso_id), Number(configuracion_nota_id)]);
+            SELECT 
+                ? AS acta_id,
+                nge.estudiante_id,
+                ROUND(SUM(nge.nota * (cng.peso_porcentaje / 100)), 2) AS promedio_ponderado_final
+            FROM notas_generales_estudiantes nge
+            INNER JOIN configuracion_notas_global cng ON nge.configuracion_nota_id = cng.id
+            WHERE nge.curso_id = ? AND cng.semestre_id = ?
+            GROUP BY nge.estudiante_id
+        `, [actaIdInsertado, Number(curso_id), Number(semestre_id)]);
 
-        // D) Actualizamos el Estado de Aprobación Final de 'En Curso' a definitivo en matricula_detalles
+        // D) Actualizamos el Estado de Aprobación Final
         await db.query(`
             UPDATE matricula_detalles md
             INNER JOIN matriculas m ON md.matricula_id = m.id
-            SET md.estado_aprobacion = CASE 
-                WHEN md.asistencia_final_porcentaje < 75 THEN 'Desaprobado por Inasistencias'
-                WHEN md.promedio_final >= 10.5 THEN 'Aprobado'
-                ELSE 'Desaprobado por Notas'
-            END
+            INNER JOIN (
+                SELECT 
+                    nge.estudiante_id,
+                    ROUND(SUM(nge.nota * (cng.peso_porcentaje / 100)), 2) AS promedio_calculado
+                FROM notas_generales_estudiantes nge
+                INNER JOIN configuracion_notas_global cng ON nge.configuracion_nota_id = cng.id
+                WHERE nge.curso_id = ? AND cng.semestre_id = ?
+                GROUP BY nge.estudiante_id
+            ) v_notas ON m.estudiante_id = v_notas.estudiante_id
+            SET 
+                md.promedio_final = v_notas.promedio_calculado,
+                md.estado_aprobacion = CASE 
+                    WHEN md.asistencia_final_porcentaje < 75 THEN 'Desaprobado por Inasistencias'
+                    WHEN v_notas.promedio_calculado >= 10.5 THEN 'Aprobado'
+                    ELSE 'Desaprobado por Notas'
+                END
             WHERE m.semestre_id = ? AND md.curso_id = ?
-        `, [Number(semestre_id), Number(curso_id)]);
+        `, [Number(curso_id), Number(semestre_id), Number(semestre_id), Number(curso_id)]);
 
         return res.status(200).json({
             message: "¡Acta Final del curso cerrada e historiada con éxito rotundo!",
@@ -1048,6 +1127,338 @@ exports.consolidarCierreActaFinal = async (req, res) => {
 
     } catch (error) {
         console.error("🚨 Error en el botón maestro consolidarCierreActaFinal:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};
+
+
+
+// 📊 MODULO: ACTAS CONSOLIDADAS - Inyección de Ciclo Académico (2026-I)
+exports.obtenerActasConsolidadas = async (req, res) => {
+    const { semestre_id, profesor_id } = req.query;
+
+    if (!semestre_id) {
+        return res.status(400).json({ message: "El parámetro semestre_id es obligatorio." });
+    }
+
+    try {
+        await db.query("SET lc_time_names = 'es_PE'");
+
+        const [actas] = await db.query(`
+            SELECT 
+                an.id AS acta_id,
+                an.codigo_acta,
+                -- 🔥 ¡AQUÍ ESTÁ LA CLAVE! Traemos la columna url_pdf para que React la reconozca
+                an.url_pdf, 
+                s.codigo AS ciclo_academico, 
+                DATE_FORMAT(an.fecha_firma, '%d de %M de %Y a las %h:%i %p') AS fecha_cierre, 
+                c.id AS curso_id,
+                c.codigo AS curso_codigo,
+                c.nombre AS curso_nombre,
+                c.ciclo AS curso_ciclo,
+                ca.nombre AS carrera_nombre,
+                COUNT(ad.id) AS total_estudiantes,
+                ROUND(AVG(ad.nota_congelada), 2) AS promedio_general_salon,
+                SUM(CASE WHEN ad.nota_congelada >= 10.5 THEN 1 ELSE 0 END) AS cantidad_aprobados,
+                SUM(CASE WHEN ad.nota_congelada < 10.5 THEN 1 ELSE 0 END) AS cantidad_desaprobados
+            FROM actas_notes an
+            INNER JOIN cursos c ON an.curso_id = c.id
+            INNER JOIN carreras ca ON c.carrera_id = ca.id
+            INNER JOIN acta_detalles ad ON an.id = ad.acta_id
+            INNER JOIN semestres s ON an.semestre_id = s.id 
+            WHERE an.semestre_id = ?
+              AND (? IS NULL OR an.profesor_id = ?)
+            GROUP BY an.id, an.url_pdf -- Incluimos url_pdf en el group by por estándar SQL
+            ORDER BY c.ciclo ASC, an.fecha_firma DESC 
+        `, [Number(semestre_id), profesor_id ? Number(profesor_id) : null, profesor_id ? Number(profesor_id) : null]);
+
+        return res.status(200).json(actas);
+
+    } catch (error) {
+        console.error("🚨 Error crítico SQL en obtenerActasConsolidadas:", error);
+        return res.status(500).json({ error: error.message });
+    }
+};
+
+
+
+// 📄 SERVICIO MAESTRO: Generar PDF oficial del Acta Cerrada e Historiada
+exports.generarPdfActaOficial = async (req, res) => {
+    const { acta_id } = req.query; // Recibimos el ID numérico del acta a imprimir
+
+    if (!acta_id) {
+        return res.status(400).json({ message: "El parámetro acta_id es estrictamente obligatorio." });
+    }
+
+    try {
+        console.log(`-> [AIVEN.IO] PDF Engine: Compilando reporte oficial para Acta ID: ${acta_id}`);
+
+        // 1. Extraemos la Cabecera oficial del Acta desde MySQL
+        const [cabecera] = await db.query(`
+    SELECT 
+        an.codigo_acta,
+        DATE_FORMAT(an.fecha_firma, '%d/%m/%Y/%h:%i %p') AS fecha_cierre_cruda,
+        c.nombre AS curso_nombre,
+        c.codigo AS curso_codigo,
+        c.ciclo AS curso_ciclo,
+        ca.nombre AS carrera_nombre,
+        s.codigo AS semestre_codigo,
+        -- 🧠 CONCATENACIÓN AUTOMÁTICA: Si el query encuentra un grado, le añade el prefijo ideal al nombre completo
+        CONCAT(
+            IFNULL(v_grado.prefijo_abreviado, 'PROF.'), 
+            ' ', 
+            u.nombres, 
+            ' ', 
+            u.apellidos
+        ) AS profesor_nombre
+    FROM actas_notes an
+    INNER JOIN cursos c ON an.curso_id = c.id
+    INNER JOIN carreras ca ON c.carrera_id = ca.id
+    INNER JOIN semestres s ON an.semestre_id = s.id
+    INNER JOIN profesores p ON an.profesor_id = p.id
+    INNER JOIN usuarios u ON p.usuario_id = u.id
+    
+    -- 🛠️ SUB-QUERY MAESTRO: Escanea tu tabla profesor_grados y extrae ÚNICAMENTE el de mayor jerarquía
+    LEFT JOIN (
+        SELECT 
+            profesor_id,
+            nivel_grado,
+            CASE 
+                WHEN nivel_grado = 'Doctor' THEN 'DR.'
+                WHEN nivel_grado = 'Magister' THEN 'MAG.'
+                WHEN nivel_grado = 'Licenciado' THEN 'LIC.'
+                WHEN nivel_grado = 'Bachiller' THEN 'BACH.'
+                ELSE 'PROF.'
+            END AS prefijo_abreviado
+        FROM profesor_grados
+        WHERE profesor_id = (
+            SELECT profesor_id FROM actas_notes WHERE id = ? LIMIT 1
+        )
+        -- 🔥 REGLA DE ORO: Ordenamos por la jerarquía educativa real usando FIELD
+        ORDER BY FIELD(nivel_grado, 'Doctor', 'Magister', 'Licenciado', 'Bachiller') ASC
+        LIMIT 1
+    ) v_grado ON p.id = v_grado.profesor_id
+    
+    WHERE an.id = ?
+`, [Number(acta_id), Number(acta_id)]);
+
+        if (!cabecera || cabecera.length === 0) {
+            return res.status(404).json({ message: "El acta especificada no registra una cabecera histórica válida." });
+        }
+        const data = cabecera[0];
+
+
+        // 🚀 TRADUCTOR INTEGRADO DE MESES EN ESPAÑOL
+        const mesesEspanol = [
+            "enero", "febrero", "marzo", "abril", "mayo", "junio",
+            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+        ];
+
+        // Separamos la cadena cruda "22/07/2026/06:08 PM" usando las barras
+        const partesFecha = data.fecha_cierre_cruda.split('/');
+        const dia = partesFecha[0];
+        const numeroMes = parseInt(partesFecha[1], 10); // Convierte "07" en el número 7
+        const anio = partesFecha[2];
+        const horaCompleta = partesFecha[3]; // "06:08 PM"
+
+        // Obtenemos el nombre del mes restando 1 (ya que el array empieza en 0)
+        const nombreMesEs = mesesEspanol[numeroMes - 1];
+
+        // 🎯 Construimos la cadena final perfecta e institucional
+        const fechaEmisionFinal = `${dia} de ${nombreMesEs} de ${anio} a las ${horaCompleta}`;
+
+        // Guardamos el resultado en el objeto que lee tu generador de PDFKit
+        data.fecha_cierre = fechaEmisionFinal;
+
+        // 2. Extraemos el listado de notas congeladas de los alumnos en acta_detalles
+        const [detalles] = await db.query(`
+            SELECT 
+                e.codigo_estudiante,
+                CONCAT(u.apellidos, ', ', u.nombres) AS alumno_nombre,
+                u.dni,
+                ad.nota_congelada
+            FROM acta_detalles ad
+            INNER JOIN estudiantes e ON ad.estudiante_id = e.id
+            INNER JOIN usuarios u ON e.usuario_id = u.id
+            WHERE ad.acta_id = ?
+            ORDER BY u.apellidos ASC
+        `, [Number(acta_id)]);
+
+        // 3. Inicializamos el documento PDFKit (Tamaño A4 estándar con márgenes limpios)
+        const doc = new PDFDocument({ size: 'A4', margins: { top: 40, bottom: 50, left: 50, right: 50 } });
+
+        // Configuramos las cabeceras HTTP de respuesta para que el navegador lo renderice como PDF puro
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename=${data.codigo_acta}.pdf`);
+        doc.pipe(res);
+
+        // --- DISEÑO ESTÉTICO INSTITUCIONAL ---
+
+        // Encabezado Principal
+        doc.fillColor('#0f172a').fontSize(16).text('INSTITUTO DE EDUCACIÓN SUPERIOR PEDAGÓGICO', { align: 'center', weight: 'bold' });
+        doc.fontSize(11).fillColor('#475569').text('SISTEMA INTEGRADO ACADÉMICO (SIA) - ACTA CONFIGURADA', { align: 'center', marginTop: 4 });
+        doc.moveDown(1.5);
+
+        // Línea divisoria vectorial estética
+        doc.moveTo(50, doc.y).lineTo(545, doc.y).strokeColor('#cbd5e1').lineWidth(1).stroke();
+        doc.moveDown(1);
+
+        // Bloque Informativo de la Cabecera (Matriz de 2 columnas con coordenadas estables)
+        const topY = doc.y;
+        const columnaDerechaX = 320;
+        doc.fillColor('#1e3a8a').fontSize(10);
+
+        // --- FILA 1 ---
+        doc.text(`CÓDIGO ACTA: ${data.codigo_acta}`, 50, topY, { width: 260 });
+        doc.text(`PERIODO ACADÉMICO: ${data.semestre_codigo}`, columnaDerechaX, topY);
+
+        // --- FILA 2 (Especialidad vs Docente) ---
+        // Dibujamos primero la especialidad a la izquierda
+        doc.text(`ESPECIALIDAD: ${data.carrera_nombre.toUpperCase()}`, 50, topY + 16, {
+            width: 260,
+            lineGap: 2
+        });
+        // Guardamos la coordenada exacta donde terminó la especialidad para pintar el Docente al lado
+        const docenteY = doc.y + 6;
+        doc.text(`DOCENTE: ${data.profesor_nombre.toUpperCase()}`, columnaDerechaX, topY + 16, {
+            width: 220,
+            lineGap: 2
+        });
+
+        // --- FILA 3 (Asignatura vs Fecha de Emisión) ---
+        // Calculamos el Y máximo de la fila anterior para que la fila 3 nunca se monte en nada
+        const fila3Y = Math.max(doc.y + 6, docenteY);
+
+        doc.text(`ASIGNATURA: ${data.curso_nombre.toUpperCase()} (${data.curso_codigo})`, 50, fila3Y, {
+            width: 260,
+            lineGap: 2
+        });
+        doc.text(`FECHA DE EMISIÓN: ${data.fecha_cierre.toUpperCase()}`, columnaDerechaX, fila3Y);
+
+        // Desplazamiento final limpio del puntero para dar paso a la tabla
+        doc.moveDown(2.5);
+
+        // --- RENDERIZADO DE LA TABLA MATRICIAL DE NOTAS ---
+        let tableY = doc.y;
+        doc.fillColor('#475569').fontSize(9);
+
+        // Encabezado de la Tabla
+        doc.rect(50, tableY, 495, 22).fill('#f8fafc');
+        doc.fillColor('#475569');
+        doc.text('N°', 55, tableY + 6, { width: 25, align: 'center' });
+        doc.text('CÓDIGO ALUMNO', 85, tableY + 6, { width: 95 });
+        doc.text('APELLIDOS Y NOMBRES', 185, tableY + 6, { width: 195 });
+        doc.text('DNI', 385, tableY + 6, { width: 75, align: 'center' });       // ◄ Movido a la izquierda (385)
+        doc.text('NOTA FINAL', 465, tableY + 6, { width: 75, align: 'center' }); // ◄ Movido a la derecha (465)
+
+        tableY += 22;
+
+        // Cuerpo de Alumnos Recorridos dinámicamente
+        let totalNotas = 0;
+        let aprobados = 0;
+        let desaprobados = 0;
+
+        detalles.forEach((al, index) => {
+            const notaNum = Number(al.nota_congelada);
+            totalNotas += notaNum;
+            if (notaNum >= 10.5) aprobados++; else desaprobados++;
+
+            // Línea inferior de celda
+            doc.moveTo(50, tableY + 20).lineTo(545, tableY + 20).strokeColor('#e2e8f0').lineWidth(0.5).stroke();
+
+            // Textos alineados de las columnas
+            doc.fillColor('#334155');
+            doc.text(`${index + 1}`, 55, tableY + 6, { width: 25, align: 'center' });
+            doc.text(al.codigo_estudiante || '---', 85, tableY + 6, { width: 95 });
+            doc.text(al.alumno_nombre.toUpperCase(), 185, tableY + 6, { width: 195 });
+            doc.text(al.dni || '---', 385, tableY + 6, { width: 75, align: 'center' }); // ◄ Coincide con 385
+
+            // Regla de color según ley pedagógica superior
+            if (notaNum >= 10.5) {
+                doc.fillColor('#16a34a'); // Verde Aprobado
+                doc.text(`${Math.round(notaNum)} (${notaNum.toFixed(2)})`, 465, tableY + 6, { align: 'center', weight: 'bold' });
+            } else {
+                doc.fillColor('#dc2626'); // Rojo Desaprobado
+                doc.text(`${Math.round(notaNum)} (${notaNum.toFixed(2)})`, 465, tableY + 6, { align: 'center', weight: 'bold' });
+            }
+
+            tableY += 20;
+        });
+
+        doc.moveDown(2);
+
+        // --- BLOQUE ESTADÍSTICO DE RESUMEN ---
+        doc.x = 50; // Reseteamos margen horizontal
+        const promedioSalon = totalNotas / detalles.length;
+
+        doc.fillColor('#1e293b').fontSize(10).text('RESUMEN DE RENDIMIENTO ACADÉMICO:', { weight: 'bold' });
+        doc.fontSize(9.5).fillColor('#475569');
+        doc.text(`• Total Estudiantes Evaluados: ${detalles.length}`, { marginTop: 4 });
+        doc.text(`• Promedio General de la Sección: ${promedioSalon.toFixed(2)}`);
+        doc.text(`• Alumnos Condición Aprobados: ${aprobados}`);
+        doc.text(`• Alumnos Condición Desaprobados: ${desaprobados}`);
+
+        doc.moveDown(4.5);
+
+        // --- 🔥 ZONA EXCLUSIVA: ESPACIO EN BLANCO CONFIGURADO PARA LA FIRMA DEL DOCENTE ---
+        const firmaY = doc.y + 20;
+        doc.moveTo(190, firmaY).lineTo(400, firmaY).strokeColor('#475569').lineWidth(1).stroke();
+        doc.fillColor('#334155').fontSize(10).text(`${data.profesor_nombre.toUpperCase()}`, 50, firmaY + 6, { align: 'center', weight: 'bold' });
+        doc.fontSize(9).fillColor('#64748b').text('DOCENTE RESPONSABLE - FIRMA DIGITAL / FÍSICA', 50, firmaY + 18, { align: 'center' });
+
+        // Cerramos y consolidamos el flujo del stream hacia Express
+        doc.end();
+
+    } catch (error) {
+        console.error("🚨 Error crítico en el generador de PDF nativo pdfkit:", error);
+        if (!res.headersSent) {
+            return res.status(500).json({ error: error.message });
+        }
+    }
+};
+
+
+
+
+exports.actualizarDocumentoActa = async (req, res) => {
+    const { id } = req.params;
+    const accion = req.query.accion; // Captura si la URL envía 'subir' o 'eliminar'
+
+    try {
+        // ❌ ACCIÓN 1: ELIMINAR EL DOCUMENTO FIRMADO DE LA BASE DE DATOS
+        if (accion === 'eliminar') {
+            console.log(`-> [AIVEN.IO] Removiendo enlace digital para Acta ID: ${id}`);
+
+            await db.query("UPDATE actas_notes SET url_pdf = NULL WHERE id = ?", [Number(id)]);
+
+            return res.status(200).json({
+                message: "¡El documento firmado fue removido con éxito de la base de datos!",
+                url_pdf: null
+            });
+        }
+
+        // 📤 ACCIÓN 2: SUBIR O EDITAR (REEMPLAZAR) EL ARCHIVO FISICO
+        // Validamos si el multer exclusivo logró capturar el binario en la subcarpeta
+        if (!req.file) {
+            return res.status(400).json({ message: "No se ha recibido ningún archivo binario válido en la petición." });
+        }
+
+        // 🔥 CORRECCIÓN EXACTA DE INGENIERÍA DE RUTAS:
+        // Como tu storageActas guarda en 'uploads/actas/', acoplamos la ruta web idéntica
+        const urlArchivoReal = `/uploads/actas/${req.file.filename}`;
+
+        console.log(`-> [AIVEN.IO] Repositorio: Registrando ruta real '${urlArchivoReal}' para Acta ID: ${id}`);
+
+        // Actualizamos la columna url_pdf en la tabla física actas_notes de tu Workbench
+        await db.query("UPDATE actas_notes SET url_pdf = ? WHERE id = ?", [urlArchivoReal, Number(id)]);
+
+        return res.status(200).json({
+            message: "¡Documento firmado y guardado correctamente en la base de datos!",
+            url_pdf: urlArchivoReal
+        });
+
+    } catch (error) {
+        console.error("🚨 Error crítico en el controlador actualizarDocumentoActa:", error);
         return res.status(500).json({ error: error.message });
     }
 };
