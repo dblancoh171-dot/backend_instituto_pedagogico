@@ -264,62 +264,49 @@ exports.registrarNota = async (req, res) => {
 
 
 
-// 🔥 NUEVO: Obtener las asignaturas asignadas al profesor desde carga_academica
+// ============================================================================
+// 🔒 SECCIÓN: MIS CURSOS DEL DOCENTE (UNIFICADA Y BLINDADA FULL-STACK)
+// ============================================================================
 exports.obtenerCursosPorDocente = async (req, res) => {
     const { profesor_id, semestre_id } = req.query;
 
     if (!profesor_id || !semestre_id) {
-        return res.status(400).json({ message: "Faltan parámetros (profesor_id o semestre_id)." });
+        return res.status(400).json({ message: "Faltan parámetros obligatorios en la petición (profesor_id o semestre_id)." });
     }
 
     try {
-        // 🔥 QUERY REDISEÑADO: Integra bloques_horarios y extrae el aula real
-        const [cursos] = await db.query(`
-            SELECT 
-                c.id AS curso_id,
-                c.nombre AS curso_nombre,
-                c.ciclo,
-                c.codigo AS codigo, -- Usamos el código real único de la tabla cursos que limpiamos antes
-                IFNULL(
-                    (
-                        SELECT GROUP_CONCAT(
-                            CONCAT(
-                                UPPER(SUBSTRING(h.dia_semana, 1, 1)), SUBSTRING(h.dia_semana, 2), 
-                                ' (', DATE_FORMAT(bh.hora_inicio, '%H:%i'), '-', DATE_FORMAT(bh.hora_fin, '%H:%i'), ') [', h.aula, ']'
-                            )
-                            SEPARATOR ' / '
-                        )
-                        FROM horarios h
-                        INNER JOIN bloques_horarios bh ON h.bloque_id = bh.id
-                        WHERE h.carga_academica_id = ca.id
-                    ),
-                    'Horario por Definir'
-                ) AS horario
-            FROM carga_academica ca
-            INNER JOIN cursos c ON ca.curso_id = c.id
-            WHERE ca.profesor_id = ? AND ca.semestre_id = ?
-            ORDER BY c.ciclo ASC, c.nombre ASC
-        `, [Number(profesor_id), Number(semestre_id)]);
+        console.log(`-> [AIVEN.IO] Auditoría: Evaluando plazos de ciclo para Profesor ID: ${profesor_id}`);
 
-        return res.status(200).json(cursos);
-    } catch (error) {
-        console.error("🚨 Error critico SQL en obtenerCursosPorDocente:", error);
-        return res.status(500).json({ error: error.message });
-    }
-};
+        // 1. 🔒 CONSULTA DE INTEGRIDAD: Extraemos la fecha límite de actas de la tabla semestres
+        const [cronograma] = await db.query(`
+    SELECT fecha_limite_actas FROM semestres WHERE id = ?
+`, [Number(semestre_id)]);
 
+        // 🔥 EL CAMBIO DE ORO: Validamos la longitud del array
+        if (cronograma.length > 0 && cronograma[0].fecha_limite_actas) {
+            // Sincronizamos los relojes en la hora local oficial de Perú
+            const ahoraPeruStr = new Date().toLocaleString("sv-SE", { timeZone: "America/Lima" });
 
+            // 🚀 INYECCIÓN DEL ÍNDICE: Extraemos la columna real del objeto de MySQL
+            const limiteActasStr = new Date(cronograma[0].fecha_limite_actas).toLocaleString("sv-SE", { timeZone: "America/Lima" });
 
+            console.log(`-> [ATTACK TEST NOTAS] Server Time: ${ahoraPeruStr} | Deadline: ${limiteActasStr}`);
 
+            // Ahora la matemática será exacta: "2026-08-04" > "2026-07-13" ➔ TRUE
+            if (ahoraPeruStr > limiteActasStr) {
+                console.warn(`🚨 BYPASS INTERCEPTADO: Intento de entrada a Notas bloqueado. Docente ID: ${profesor_id}`);
 
-exports.obtenerCursosPorDocente = async (req, res) => {
-    const { profesor_id, semestre_id } = req.query;
+                // Respondemos con un 403 Forbidden y un array vacío rumbo a React
+                return res.status(403).json({
+                    message: "⚠️ Acceso denegado por Auditoría: El registro ordinario de calificaciones para este periodo académico ha sido archivado.",
+                    cursos: []
+                });
+            }
+        }
 
-    if (!profesor_id || !semestre_id) {
-        return res.status(400).json({ message: "Faltan parámetros (profesor_id o semestre_id)." });
-    }
-
-    try {
+        // =====================================================================
+        // 🔓 ADENTRO DEL PLAZO VIVO: SE EJECUTA TU CONSULTA ORIGINAL AVANZADA
+        // =====================================================================
         // ⏰ CÁLCULO DE TIEMPO REAL: Obtenemos el nombre del día en español usando el reloj del sistema
         const diasSemana = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
         const fechaActual = new Date();
@@ -329,34 +316,37 @@ exports.obtenerCursosPorDocente = async (req, res) => {
         fechaManana.setDate(fechaActual.getDate() + 1);
         const diaManana = diasSemana[fechaManana.getDay()];
 
+        console.log(`-> [AIVEN.IO] Extrayendo catálogo dinámico con alertas para Hoy: ${diaHoy} | Mañana: ${diaManana}`);
+
         const [cursos] = await db.query(`
-            SELECT 
+            SELECT
                 c.id AS curso_id,
                 c.nombre AS curso_nombre,
                 c.ciclo,
-                c.codigo AS codigo, -- 🔥 CORREGIDO: Usamos la columna unificada oficial
+                c.codigo AS codigo,
                 
-                -- JALAMOS EL HORARIO FORMATEADO DE TU NUEVA TABLA MAESTRA DEL TIEMPO
+                -- JALAMOS EL HORARIO FORMATEADO DE TU TABLA MAESTRA DEL TIEMPO
                 IFNULL(
                     (
                         SELECT GROUP_CONCAT(
                             CONCAT(
-                                UPPER(SUBSTRING(h.dia_semana, 1, 1)), SUBSTRING(h.dia_semana, 2), 
-                                ' (', DATE_FORMAT(bh.hora_inicio, '%H:%i'), '-', DATE_FORMAT(bh.hora_fin, '%H:%i'), ') [', h.aula, ']'
+                                UPPER(SUBSTRING(h.dia_semana, 1, 1)), SUBSTRING(h.dia_semana, 2),
+                                ' (', DATE_FORMAT(bh.hora_inicio, '%H:%i'),
+                                '-', DATE_FORMAT(bh.hora_fin, '%H:%i'), ') [', h.aula, ']'
                             )
                             SEPARATOR ' / '
                         )
                         FROM horarios h
-                        INNER JOIN bloques_horarios bh ON h.bloque_id = bh.id -- 🔥 CORREGIDO: Enlace a bloques
+                        INNER JOIN bloques_horarios bh ON h.bloque_id = bh.id
                         WHERE h.carga_academica_id = ca.id
                     ),
                     'Horario por Definir'
                 ) AS horario,
-
-                -- ALERTA INTERACTIVA 1 CORREGIDA: Blindado contra mayúsculas/minúsculas usando LOWER()
+                
+                -- ALERTA INTERACTIVA 1: Próxima clase hoy/mañana blindada contra mayúsculas
                 IFNULL(
                     (
-                        SELECT CASE 
+                        SELECT CASE
                             WHEN SUM(CASE WHEN LOWER(h2.dia_semana) = LOWER(?) THEN 1 ELSE 0 END) > 0 THEN 'Próxima Clase: Hoy'
                             WHEN SUM(CASE WHEN LOWER(h2.dia_semana) = LOWER(?) THEN 1 ELSE 0 END) > 0 THEN 'Próxima Clase: Mañana'
                             ELSE 'Sin clases próximas'
@@ -366,25 +356,24 @@ exports.obtenerCursosPorDocente = async (req, res) => {
                     ),
                     'Sin clases próximas'
                 ) AS estatus_clase,
-
-                -- 🔥 ALERTA INTERACTIVA 2: Mantiene tu excelente lógica de casilleros de notas vacíos
+                
+                -- ALERTA INTERACTIVA 2: Mantiene tu excelente lógica de casilleros de notas vacíos
                 (
                     SELECT COUNT(DISTINCT m.estudiante_id)
                     FROM matricula_detalles md
                     INNER JOIN matriculas m ON md.matricula_id = m.id
-                    WHERE md.curso_id = c.id 
-                      AND m.semestre_id = ca.semestre_id
-                      AND (
-                          SELECT COUNT(*) 
-                          FROM notas_generales_estudiantes nge
-                          WHERE nge.estudiante_id = m.estudiante_id AND nge.curso_id = md.curso_id
-                      ) < (
-                          SELECT COUNT(*) 
-                          FROM configuracion_notas_global cng
-                          WHERE cng.semestre_id = ca.semestre_id
-                      )
+                    WHERE md.curso_id = c.id
+                    AND m.semestre_id = ca.semestre_id
+                    AND (
+                        SELECT COUNT(*)
+                        FROM notas_generales_estudiantes nge
+                        WHERE nge.estudiante_id = m.estudiante_id AND nge.curso_id = md.curso_id
+                    ) < (
+                        SELECT COUNT(*)
+                        FROM configuracion_notas_global cng
+                        WHERE cng.semestre_id = ca.semestre_id
+                    )
                 ) AS notas_pendientes_count
-
             FROM carga_academica ca
             INNER JOIN cursos c ON ca.curso_id = c.id
             WHERE ca.profesor_id = ? AND ca.semestre_id = ?
@@ -392,8 +381,9 @@ exports.obtenerCursosPorDocente = async (req, res) => {
         `, [diaHoy, diaManana, Number(profesor_id), Number(semestre_id)]);
 
         return res.status(200).json(cursos);
+
     } catch (error) {
-        console.error("🚨 Error crítico en obtenerCursosPorDocente:", error);
+        console.error("🚨 Error crítico en el endpoint maestro de obtenerCursosPorDocente:", error);
         return res.status(500).json({ error: error.message });
     }
 };
@@ -1425,6 +1415,51 @@ exports.actualizarDocumentoActa = async (req, res) => {
     const accion = req.query.accion; // Captura si la URL envía 'subir' o 'eliminar'
 
     try {
+        console.log(`-> [AIVEN.IO] Auditoría: Evaluando plazos para modificar Acta ID: ${id}`);
+
+        // 1. 🔒 CANDADO DE SEGURIDAD INTERNO: Consultamos el plazo límite del semestre asociado a esta acta
+        const [actaVerificacion] = await db.query(`
+            SELECT s.fecha_limite_actas 
+            FROM actas_notes an
+            INNER JOIN semestres s ON an.semestre_id = s.id
+            WHERE an.id = ?
+        `, [Number(id)]);
+
+        if (actaVerificacion.length === 0) {
+            // Si enviaron un archivo físico por Postman pero el acta no existe, limpiamos el disco de inmediato
+            if (req.file) {
+                const fs = require('fs');
+                if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+            }
+            return res.status(404).json({ message: "El registro de acta especificado no existe en el sistema." });
+        }
+
+        // 🚀 CAPTURA Y COMPARACIÓN DE TIEMPO REAL EN LA ZONA HORARIA DE PERÚ
+        const ahoraPeruStr = new Date().toLocaleString("sv-SE", { timeZone: "America/Lima" });
+
+        if (actaVerificacion[0].fecha_limite_actas) {
+            const limiteActasStr = new Date(actaVerificacion[0].fecha_limite_actas).toLocaleString("sv-SE", { timeZone: "America/Lima" });
+
+            // 🔥 CORTE POR FECHA EXPIRADA: Si hoy (31 de Julio) superó al límite (13 de Julio), abortamos todo
+            if (ahoraPeruStr > limiteActasStr) {
+                console.warn(`🚨 ADVERTENCIA: Intento bloqueado de adulterar acta fuera de plazo. Acta ID: ${id}`);
+
+                // Si Multer ya guardó el PDF en la carpeta uploads/actas, lo destruimos para proteger el disco
+                if (req.file) {
+                    const fs = require('fs');
+                    if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+                }
+
+                return res.status(403).json({
+                    message: "⚠️ Operación rechazada por Auditoría: El plazo institucional máximo establecido para editar o eliminar este documento ha concluido de forma irreversible."
+                });
+            }
+        }
+
+        // =====================================================================
+        // 🔓 ADENTRO DE PLAZO: CONTINÚA TU LÓGICA ORDINARIA ORIGINAL INTACTA
+        // =====================================================================
+
         // ❌ ACCIÓN 1: ELIMINAR EL DOCUMENTO FIRMADO DE LA BASE DE DATOS
         if (accion === 'eliminar') {
             console.log(`-> [AIVEN.IO] Removiendo enlace digital para Acta ID: ${id}`);
@@ -1438,18 +1473,14 @@ exports.actualizarDocumentoActa = async (req, res) => {
         }
 
         // 📤 ACCIÓN 2: SUBIR O EDITAR (REEMPLAZAR) EL ARCHIVO FISICO
-        // Validamos si el multer exclusivo logró capturar el binario en la subcarpeta
         if (!req.file) {
             return res.status(400).json({ message: "No se ha recibido ningún archivo binario válido en la petición." });
         }
 
-        // 🔥 CORRECCIÓN EXACTA DE INGENIERÍA DE RUTAS:
-        // Como tu storageActas guarda en 'uploads/actas/', acoplamos la ruta web idéntica
         const urlArchivoReal = `/uploads/actas/${req.file.filename}`;
 
         console.log(`-> [AIVEN.IO] Repositorio: Registrando ruta real '${urlArchivoReal}' para Acta ID: ${id}`);
 
-        // Actualizamos la columna url_pdf en la tabla física actas_notes de tu Workbench
         await db.query("UPDATE actas_notes SET url_pdf = ? WHERE id = ?", [urlArchivoReal, Number(id)]);
 
         return res.status(200).json({
@@ -1458,6 +1489,11 @@ exports.actualizarDocumentoActa = async (req, res) => {
         });
 
     } catch (error) {
+        // Limpieza de emergencia del disco si ocurre un crash inesperado a mitad del query
+        if (req.file) {
+            const fs = require('fs');
+            if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        }
         console.error("🚨 Error crítico en el controlador actualizarDocumentoActa:", error);
         return res.status(500).json({ error: error.message });
     }

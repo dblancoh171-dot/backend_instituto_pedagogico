@@ -10,7 +10,32 @@ exports.obtenerHorarioProfesor = async (req, res) => {
     }
 
     try {
-        // 🚀 CORRECCIÓN SÓNICA: Cambiado 'hb.hora_inicio' por 'h.hora_inicio' (Tu alias real)
+        console.log(`-> [AIVEN.IO] Auditoría: Evaluando plazos institucionales para el Profesor ID: ${profesor_id}`);
+
+        // 1. 🔒 CANDADO DE SEGURIDAD INTERNO: Consultamos la fecha límite de actas de este periodo en la BD
+        const [cronograma] = await db.query(`
+            SELECT fecha_limite_actas FROM semestres WHERE id = ?
+        `, [Number(semestre_id)]);
+
+        if (cronograma.length > 0 && cronograma[0].fecha_limite_actas) {
+            const ahoraPeruStr = new Date().toLocaleString("sv-SE", { timeZone: "America/Lima" });
+
+            // 🔥 CAMBIO COMPROBADO: cronograma[0] asegura la lectura limpia de la primera fila
+            const limiteActasStr = new Date(cronograma[0].fecha_limite_actas).toLocaleString("sv-SE", { timeZone: "America/Lima" });
+
+            console.log(`-> [HACK TEST] Server Time: ${ahoraPeruStr} | Limit: ${limiteActasStr}`);
+
+            if (ahoraPeruStr > limiteActasStr) {
+                return res.status(403).json({
+                    message: "⚠️ Acceso denegado por Auditoría.",
+                    horario: [] // Enviamos el cascarón vacío
+                });
+            }
+        }
+
+        // =====================================================================
+        // 🔓 ADENTRO DEL PERIODO VIVO: EJECUTAS TU CONSULTA ORIGINAL INTACTA
+        // =====================================================================
         const [rows] = await db.query(`
             SELECT 
                 h.id AS horario_id,
@@ -23,7 +48,7 @@ exports.obtenerHorarioProfesor = async (req, res) => {
             FROM horarios h
             INNER JOIN carga_academica ca ON h.carga_academica_id = ca.id
             INNER JOIN cursos c ON ca.curso_id = c.id
-			INNER JOIN bloques_horarios b ON h.bloque_id = b.id
+            INNER JOIN bloques_horarios b ON h.bloque_id = b.id
             WHERE ca.profesor_id = ? AND ca.semestre_id = ?
             ORDER BY 
                 FIELD(LOWER(h.dia_semana), 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'), 

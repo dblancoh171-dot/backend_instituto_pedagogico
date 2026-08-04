@@ -153,7 +153,7 @@ exports.obtenerCursosParaMatricula = async (req, res) => {
             cursos: [...regularesProcesados, ...cargosProcesados],
             totalCargosPendientes: cargosProcesados.length,
             yaMatriculado: yaMatriculado
-});
+        });
 
     } catch (error) {
         console.error("🚨 Error crítico en obtenerCursosParaMatricula:", error);
@@ -286,9 +286,15 @@ exports.obtenerEstadoCalendarioAcademico = async (req, res) => {
     try {
         console.log(`-> [AIVEN.IO] Evaluando etapas de tiempo para Semestre ID: ${semestre_id}`);
 
-        // Consultamos de forma directa las 4 columnas de tu imagen previa de Workbench
+        // 🚀 CORRECCIÓN 1: Seleccionamos la columna 'codigo' y la nueva 'fecha_limite_actas'
         const [semestre] = await db.query(`
-            SELECT fecha_inicio_matricula, fecha_fin_matricula, fecha_inicio_clases, fecha_fin_clases
+            SELECT 
+                codigo,
+                fecha_inicio_matricula, 
+                fecha_fin_matricula,
+                fecha_inicio_clases, 
+                fecha_fin_clases,
+                fecha_limite_actas
             FROM semestres
             WHERE id = ?
         `, [Number(semestre_id)]);
@@ -298,31 +304,37 @@ exports.obtenerEstadoCalendarioAcademico = async (req, res) => {
         }
 
         const datosSemestre = semestre[0];
-        const ahora = new Date(); // ⏱️ Reloj del sistema actual: 3 de Julio de 2026
-        
-        const finMatricula = new Date(datosSemestre.fecha_fin_matricula); // 📅 12 de Julio
-        const inicioClases = new Date(datosSemestre.fecha_inicio_clases);   // 📅 15 de Agosto
+        const ahora = new Date(); // Reloj real del sistema
 
-        // 🧠 DETERMINACIÓN MATEMÁTICA DE LA ETAPA ACTUAL
-        // Las asignaturas se congelan si estamos en Fase de Matrícula Abierta O en Fase de Procesamiento de Actas (Intermedio)
-        // Es decir, "Mis Cursos" se bloquea si la fecha de hoy es menor al inicio oficial de clases (15 de Agosto)
+        const finMatricula = new Date(datosSemestre.fecha_fin_matricula);
+        const inicioClases = new Date(datosSemestre.fecha_inicio_clases);
+        // 🚀 Capturamos el plazo de actas de la fila de la BD
+        const limiteActas = datosSemestre.fecha_limite_actas ? new Date(datosSemestre.fecha_limite_actas) : null;
+
+        // 🧠 DETERMINACIÓN MATEMÁTICA DE LAS ETAPAS ACTIVAS
         const deshabilitarCursosAlumno = ahora < inicioClases;
-
         const periodoMatriculaVencido = ahora > finMatricula;
 
-        
+        // 🚀 CORRECCIÓN 2: Evaluamos si el reloj de hoy (23 de Julio) ya pasó la fecha límite (13 de Julio)
+        const cicloConcluido = limiteActas && ahora > limiteActas;
 
         // Despachamos el paquete integral de directrices de seguridad rumbo a React
         return res.status(200).json({
             fases: {
-                deshabilitarCursosAlumno: deshabilitarCursosAlumno, // 🔥 Pasará a TRUE en tu pantalla
+                deshabilitarCursosAlumno: deshabilitarCursosAlumno,
                 deshabilitarNotasAlumno: deshabilitarCursosAlumno,
-
-                periodoMatriculaVencido: periodoMatriculaVencido
+                periodoMatriculaVencido: periodoMatriculaVencido,
+                // 🔥 ESTE FLAG CAMBIARÁ A TRUE EN TU FRONTEND DE FORMA AUTOMÁTICA
+                semestreCerrado: cicloConcluido
             },
             fechas_oficiales: {
                 limite_matricula: finMatricula,
-                apertura_clases: inicioClases
+                apertura_clases: inicioClases,
+                limite_actas: limiteActas
+            },
+            // 🚀 CORRECCIÓN 3: Enviamos los datos dinámicos para limpiar los textos fijos en React
+            semestre_info: {
+                codigo: datosSemestre.codigo
             }
         });
 
@@ -331,3 +343,4 @@ exports.obtenerEstadoCalendarioAcademico = async (req, res) => {
         return res.status(500).json({ error: error.message });
     }
 };
+

@@ -360,14 +360,43 @@ exports.eliminarExperienciaLaboral = async (req, res) => {
 exports.obtenerMisAlumnosDetalle = async (req, res) => {
     const { profesor_id, semestre_id } = req.query;
 
-    console.log(`-> [AIVEN.IO] Generando Directorio Clinico de Alumnos para Profesor: ${profesor_id} | Semestre: ${semestre_id}`);
+    console.log(`-> [AIVEN.IO] Generando Directorio Clínico de Alumnos para Profesor: ${profesor_id} | Semestre: ${semestre_id}`);
 
     if (!profesor_id || !semestre_id) {
         return res.status(400).json({ message: "Los parametros profesor_id y semestre_id son estrictamente requeridos." });
     }
 
     try {
-        // Ejecutamos un query unificado cruzando tu arbol de la captura de pantalla
+        console.log(`-> [AIVEN.IO] Auditoría: Evaluando plazos institucionales para el Profesor ID: ${profesor_id}`);
+
+        // 1. 🔒 CANDADO DE SEGURIDAD INTERNO: Consultamos la fecha límite de actas de este periodo en la BD
+        const [cronograma] = await db.query(`
+    SELECT fecha_limite_actas FROM semestres WHERE id = ?
+`, [Number(semestre_id)]);
+
+        // 🔥 TRUCO SENIOR: Validamos que el array tenga al menos un registro [0]
+        if (cronograma.length > 0 && cronograma[0].fecha_limite_actas) {
+            const ahoraPeruStr = new Date().toLocaleString("sv-SE", { timeZone: "America/Lima" });
+
+            // 🔥 EL CAMBIO DE ORO: Colocamos [0] para leer la columna real del objeto dentro del array
+            const limiteActasStr = new Date(cronograma[0].fecha_limite_actas).toLocaleString("sv-SE", { timeZone: "America/Lima" });
+
+            console.log(`-> [AUDIT NÓMINA FINAL] Server: ${ahoraPeruStr} | Deadline: ${limiteActasStr}`);
+
+            // Ahora la matemática será exacta e infalible: "2026-08-04" > "2026-07-13" ➔ TRUE
+            if (ahoraPeruStr > limiteActasStr) {
+                console.warn(`🚨 BYPASS INTERCEPTADO: Intento de fuga de nómina bloqueado. Docente ID: ${profesor_id}`);
+
+                return res.status(403).json({
+                    message: "⚠️ Acceso denegado por Auditoría: La nómina de estudiantes ha sido archivada por fin de ciclo.",
+                    alumnos: []
+                });
+            }
+        }
+
+        // =====================================================================
+        // 🔓 ADENTRO DEL PERIODO VIVO: EJECUTAS TU CONSULTA ORIGINAL INTACTA
+        // =====================================================================
         const [rows] = await db.query(`
             SELECT DISTINCT
                 e.id AS estudiante_id,

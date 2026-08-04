@@ -125,6 +125,9 @@ exports.matricularEstudiante = async (req, res) => {
 
 
 // 🟢 NUEVO: Obtener los cursos en los que el estudiante se encuentra matriculado legítimamente
+// ============================================================================
+// 🔒 CANDADO DE SEGURIDAD FULL-STACK: CIERRE DE PERIODO ACADÉMICO
+// ============================================================================
 exports.obtenerCursosMatriculadosEstudiante = async (req, res) => {
     const { estudiante_id, semestre_id } = req.query;
 
@@ -135,11 +138,40 @@ exports.obtenerCursosMatriculadosEstudiante = async (req, res) => {
     }
 
     try {
+        console.log(`-> [AIVEN.IO] Auditoría: Validando plazos del calendario para Alumno ID: ${estudiante_id}`);
+
+        // 1. Consultamos de forma obligatoria la fecha límite de actas de este periodo en la BD
+        const [cronograma] = await db.query(`
+            SELECT fecha_limite_actas FROM semestres WHERE id = ?
+        `, [Number(semestre_id)]);
+
+        if (cronograma.length > 0 && cronograma[0].fecha_limite_actas) {
+            // Capturamos el tiempo real exacto homologado en la zona horaria de Perú
+            const ahoraPeruStr = new Date().toLocaleString("sv-SE", { timeZone: "America/Lima" });
+            const limiteActasStr = new Date(cronograma[0].fecha_limite_actas).toLocaleString("sv-SE", { timeZone: "America/Lima" });
+
+            console.log(`-> [AUDIT LOG] Server Time: ${ahoraPeruStr} | Deadline Actas: ${limiteActasStr}`);
+
+            // 🔥 CANDADO DE ENTRADA AL REPOSITORIO: Si hoy (04 de Agosto de 2026) superó al límite (13 de Julio), abortamos
+            if (ahoraPeruStr > limiteActasStr) {
+                console.warn(`🚨 BYPASS DETECTADO: Alumno ID ${estudiante_id} solicitó carga lectiva ordinaria fuera de plazo.`);
+                
+                // Respondemos un estado 403 (Prohibido) y un array vacío.
+                // Así, aunque alteren React, las tablas de Cursos y Horarios se pintarán en blanco sin datos que robar.
+                return res.status(403).json({ 
+                    message: "⚠️ Acceso denegado por Auditoría: Las asignaturas ordinarias de este periodo académico han sido archivadas.",
+                    cursos_detalles: [] 
+                });
+            }
+        }
+
+        // =====================================================================
+        // 🔓 ADENTRO DEL PERIODO: CONTINÚA TU LOGICA ORIGINAL DIRECTA (PÁGINA 6)
+        // =====================================================================
         console.log(`-> [AIVEN.IO] Extrayendo carga académica para Estudiante ID: ${estudiante_id} | Semestre ID: ${semestre_id}`);
 
-        // Consulta relacional de alta precisión para jalar los cursos y sus respectivos profesores
         const [cursos] = await db.query(`
-            SELECT 
+            SELECT
                 c.id AS curso_id,
                 c.nombre AS curso_nombre,
                 c.ciclo,
@@ -150,7 +182,9 @@ exports.obtenerCursosMatriculadosEstudiante = async (req, res) => {
                 IFNULL(
                     (
                         SELECT GROUP_CONCAT(
-                            CONCAT(UPPER(SUBSTRING(h.dia_semana, 1, 1)), SUBSTRING(h.dia_semana, 2), ' (', DATE_FORMAT(h.hora_inicio, '%H:%i'), '-', DATE_FORMAT(h.hora_fin, '%H:%i'), ')')
+                            CONCAT(UPPER(SUBSTRING(h.dia_semana, 1, 1)), SUBSTRING(h.dia_semana, 2), ' (',
+                            DATE_FORMAT(h.hora_inicio, '%H:%i'), '-',
+                            DATE_FORMAT(h.hora_fin, '%H:%i'), ')')
                             SEPARATOR ' / '
                         )
                         FROM horarios h
@@ -175,4 +209,5 @@ exports.obtenerCursosMatriculadosEstudiante = async (req, res) => {
         return res.status(500).json({ error: error.message });
     }
 };
+
 
